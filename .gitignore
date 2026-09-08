@@ -60,3 +60,29 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Operating system files
+.DS_Store
+**/.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local workspace files
+**/[Aa][Gg][Ee][Nn][Tt][Ss].md
+**/[Cc][Ll][Aa][Uu][Dd][Ee].md
+**/.codex/
+**/.claude/
+
+# Private research and recordings
+/research/
+/recordings/
+
+# Secrets and signing material
+.env
+.env.*
+!.env.example
+Secrets.xcconfig
+*.p8
+*.p12
+*.mobileprovision
+*.provisionprofile
