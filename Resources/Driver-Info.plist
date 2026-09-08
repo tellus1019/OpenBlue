@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>org.openblue.driver</string>
+<key>CFBundleName</key><string>OpenBlue</string>
+<key>CFBundleExecutable</key><string>OpenBlueDriver</string>
+<key>CFBundlePackageType</key><string>BNDL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFPlugInFactories</key><dict><key>F4C59091-04B9-4629-BF55-5D7A559CFB08</key><string>OpenBlue_Create</string></dict>
+<key>CFPlugInTypes</key><dict><key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key><array><string>F4C59091-04B9-4629-BF55-5D7A559CFB08</string></array></dict>
+</dict></plist>
