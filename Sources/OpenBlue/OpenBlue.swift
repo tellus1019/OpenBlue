@@ -105,9 +105,11 @@ private func devices() -> [AudioDevice] {
       self, selector: #selector(sleep), name: NSWorkspace.willSleepNotification, object: nil)
     NSWorkspace.shared.notificationCenter.addObserver(
       self, selector: #selector(wake), name: NSWorkspace.didWakeNotification, object: nil)
-    timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+    let meterTimer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
       Task { @MainActor [weak self] in self?.meters() }
     }
+    RunLoop.main.add(meterTimer, forMode: .common)
+    timer = meterTimer
     inputClients.start { [weak self] in self?.refresh() }
     refresh()
   }
@@ -294,8 +296,20 @@ struct Meter: View {
         Spacer()
         Text(peak > 0 ? String(format: "%.1f dBFS", 20 * log10(peak)) : "−∞ dBFS").monospacedDigit()
       }
-      ProgressView(value: max(0, min(1, (Double(20 * log10(max(peak, 0.000001))) + 60) / 60)))
-        .tint(peak >= 0.99 ? .red : .blue)
+      Canvas { context, size in
+        let level = max(0, min(1, (Double(20 * log10(max(peak, 0.000001))) + 60) / 60))
+        let track = CGRect(origin: .zero, size: size)
+        context.fill(Path(track), with: .color(.secondary.opacity(0.2)))
+        let fill = CGRect(x: 0, y: 0, width: size.width * level, height: size.height)
+        context.fill(Path(fill), with: .color(peak >= 0.99 ? .red : .blue))
+      }
+      .frame(height: 6)
+      .clipShape(Capsule())
+      .transaction { transaction in
+        transaction.animation = nil
+        transaction.disablesAnimations = true
+      }
+      .accessibilityHidden(true) // The adjacent text exposes the same level.
     }
   }
 }
