@@ -64,10 +64,11 @@ affect other Logitech peripherals.
 6. Keep OpenBlue running. Closing the window leaves it in the menu bar;
    disabling or quitting it stops capture. It does not launch at login.
 
-Capture runs only when enabled and an external client is using the virtual
-device. Do not select its output for system playback: it is the feed into the
-virtual microphone, not a speaker. Client activity counts external device I/O,
-including output use; it does not identify the type of every client stream.
+Capture runs only when enabled and an external input process is using the virtual
+device. Activity comes from Core Audio process objects and input activity
+notifications, excluding OpenBlue itself. The displayed count is processes,
+not windows or browser tabs. Do not select its output for system playback:
+it is the feed into the virtual microphone, not a speaker.
 The virtual input supplies silence when no matching audio is available.
 
 Gain, bypass, and the selected Yeti UID are saved atomically in

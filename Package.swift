@@ -10,7 +10,9 @@ let package = Package(
       name: "AudioCore", publicHeadersPath: "include",
       linkerSettings: [.linkedFramework("CoreAudio"), .linkedFramework("AudioToolbox")]),
     .target(name: "Settings"),
-    .executableTarget(name: "OpenBlue", dependencies: ["AudioCore", "Settings"]),
+    .target(name: "AudioClients"),
+    .executableTarget(name: "OpenBlue", dependencies: ["AudioCore", "Settings", "AudioClients"]),
+    .testTarget(name: "AudioClientsTests", dependencies: ["AudioClients"]),
     .testTarget(name: "SettingsTests", dependencies: ["Settings"]),
   ]
 )

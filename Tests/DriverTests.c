@@ -88,6 +88,28 @@ int main(void) {
   assert(remove_client(driver, DEVICE, &app) == 0 &&
          remove_client(driver, DEVICE, &consumer) == 0);
   assert(notifications == 4);
+  // Two distinct host clients must remain independent in either start order.
+  AudioServerPlugInClientInfo second = {3, 789, true,
+                                        CFSTR("org.example.browser")};
+  for (unsigned reverse = 0; reverse < 2; ++reverse) {
+    assert(add_client(driver, DEVICE, &app) == 0);
+    assert(add_client(driver, DEVICE, &consumer) == 0);
+    assert(add_client(driver, DEVICE, &second) == 0);
+    UInt32 first = reverse ? 3 : 2, last = reverse ? 2 : 3;
+    assert(start(driver, DEVICE, first) == 0);
+    assert(start(driver, DEVICE, 1) == 0);
+    assert(start(driver, DEVICE, last) == 0);
+    assert(atomic_load(&consumers) == 2);
+    assert(stop(driver, DEVICE, first) == 0);
+    assert(atomic_load(&consumers) == 1);
+    assert(atomic_load(&running) == 2);
+    assert(stop(driver, DEVICE, last) == 0);
+    assert(atomic_load(&consumers) == 0);
+    assert(stop(driver, DEVICE, 1) == 0);
+    assert(remove_client(driver, DEVICE, &app) == 0);
+    assert(remove_client(driver, DEVICE, &consumer) == 0);
+    assert(remove_client(driver, DEVICE, &second) == 0);
+  }
   puts("PASS driver interface, custom property contract, client lifecycle and "
        "audio I/O");
 }
