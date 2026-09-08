@@ -69,6 +69,8 @@ private func devices() -> [AudioDevice] {
   @Published var status = "Stopped"
   @Published var inputPeak: Float = 0
   @Published var outputPeak: Float = 0
+  @Published var inputReadout: Float = 0
+  @Published var outputReadout: Float = 0
   @Published var diagnostics = ""
   @Published var availableYetis: [AudioDevice] = []
   @Published var settingsError: String?
@@ -80,6 +82,7 @@ private func devices() -> [AudioDevice] {
   private let inputClients = InputClients()
   private var formatListener: AudioObjectPropertyListenerBlock?
   private var timer: Timer?
+  private var lastReadoutTime: TimeInterval = 0
   private var awake = true
   private var failed = false
   private let store: SettingsStore
@@ -105,7 +108,7 @@ private func devices() -> [AudioDevice] {
       self, selector: #selector(sleep), name: NSWorkspace.willSleepNotification, object: nil)
     NSWorkspace.shared.notificationCenter.addObserver(
       self, selector: #selector(wake), name: NSWorkspace.didWakeNotification, object: nil)
-    let meterTimer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+    let meterTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
       Task { @MainActor [weak self] in self?.meters() }
     }
     RunLoop.main.add(meterTimer, forMode: .common)
@@ -270,14 +273,23 @@ private func devices() -> [AudioDevice] {
     engineOutput = 0
     inputPeak = 0
     outputPeak = 0
+    inputReadout = 0
+    outputReadout = 0
+    lastReadoutTime = 0
   }
   private func meters() {
     guard let engine else { return }
     let stats = ob_engine_stats(engine)
     inputPeak = stats.signal.input_peak
     outputPeak = stats.signal.output_peak
-    diagnostics =
-      "Underruns: \(stats.signal.underruns)  Overruns: \(stats.signal.overruns)  Clipped: \(stats.signal.clipped_samples)"
+    let now = ProcessInfo.processInfo.systemUptime
+    if now - lastReadoutTime >= 0.2 {
+      inputReadout = inputPeak
+      outputReadout = outputPeak
+      diagnostics =
+        "Underruns: \(stats.signal.underruns)  Overruns: \(stats.signal.overruns)  Clipped: \(stats.signal.clipped_samples)"
+      lastReadoutTime = now
+    }
     if stats.error != noErr {
       failed = true
       status = "Audio stopped after an error (\(stats.error)). Disable and enable to retry."
@@ -289,26 +301,25 @@ private func devices() -> [AudioDevice] {
 struct Meter: View {
   let title: String
   let peak: Float
+  let readout: Float
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       HStack {
         Text(title)
         Spacer()
-        Text(peak > 0 ? String(format: "%.1f dBFS", 20 * log10(peak)) : "−∞ dBFS").monospacedDigit()
+        Text(readout > 0 ? String(format: "%.1f dBFS", 20 * log10(readout)) : "−∞ dBFS").monospacedDigit()
       }
-      Canvas { context, size in
-        let level = max(0, min(1, (Double(20 * log10(max(peak, 0.000001))) + 60) / 60))
-        let track = CGRect(origin: .zero, size: size)
-        context.fill(Path(track), with: .color(.secondary.opacity(0.2)))
-        let fill = CGRect(x: 0, y: 0, width: size.width * level, height: size.height)
-        context.fill(Path(fill), with: .color(peak >= 0.99 ? .red : .blue))
+      ZStack(alignment: .leading) {
+        Rectangle().fill(.secondary.opacity(0.2))
+        Rectangle().fill(peak >= 0.99 ? Color.red : Color.primary)
+          .scaleEffect(
+            x: max(0, min(1, (Double(20 * log10(max(peak, 0.000001))) + 60) / 60)),
+            y: 1, anchor: .leading)
+          // Interpolate for one display interval, not a long attack animation.
+          .animation(.linear(duration: 1.0 / 60.0), value: peak)
       }
       .frame(height: 6)
       .clipShape(Capsule())
-      .transaction { transaction in
-        transaction.animation = nil
-        transaction.disablesAnimations = true
-      }
       .accessibilityHidden(true) // The adjacent text exposes the same level.
     }
   }
@@ -359,8 +370,8 @@ struct ContentView: View {
               model.save()
             }))
       }.disabled(model.settingsError != nil)
-      Meter(title: "Input", peak: model.inputPeak)
-      Meter(title: "Output", peak: model.outputPeak)
+      Meter(title: "Input", peak: model.inputPeak, readout: model.inputReadout)
+      Meter(title: "Output", peak: model.outputPeak, readout: model.outputReadout)
       Text(model.diagnostics).font(.caption).foregroundStyle(.secondary)
       Text(
         "Choose OpenBlue as the input in your recording or meeting app. Keep OpenBlue running. Audio stays on this Mac."

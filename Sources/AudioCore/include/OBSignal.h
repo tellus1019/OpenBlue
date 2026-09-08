@@ -5,6 +5,7 @@
 
 typedef struct OBSignal OBSignal;
 typedef struct {
+  // Display envelopes with immediate attack and 24 dB/s release, not raw block peaks.
   float input_peak, output_peak;
   uint64_t underruns, overruns, clipped_samples, output_frames;
   uint32_t buffered_frames;

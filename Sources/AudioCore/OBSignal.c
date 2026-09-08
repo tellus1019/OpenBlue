@@ -19,6 +19,7 @@ struct OBSignal {
   _Atomic uint32_t target_gain_bits, input_peak_bits, output_peak_bits, fill;
   double position;
   float gain;
+  float input_meter, output_meter;
   bool primed;
 };
 
@@ -66,6 +67,7 @@ void ob_signal_reset(OBSignal *s) {
   atomic_store(&s->target_gain_bits, bits(1));
   s->position = 15;
   s->gain = 1;
+  s->input_meter = s->output_meter = 0;
   s->primed = false;
 }
 void ob_signal_gain(OBSignal *s, float db, bool bypass) {
@@ -90,13 +92,27 @@ bool ob_signal_push(OBSignal *s, const float *in, uint32_t n) {
   atomic_store_explicit(&s->written, w + n, memory_order_release);
   return true;
 }
+static void publish_meters(OBSignal *s, float input, float output, uint32_t n) {
+  // Display-only peak envelope: immediate attack, 24 dB/second release at
+  // the fixed 48 kHz rate. Every rendered block contributes, including those
+  // between UI reads. This never changes the audio samples or buffers.
+  float release = powf(10.0f, -24.0f * (float)n / (20.0f * 48000.0f));
+  s->input_meter = fmaxf(input, s->input_meter * release);
+  s->output_meter = fmaxf(output, s->output_meter * release);
+  if (s->input_meter < 0.000001f) s->input_meter = 0;
+  if (s->output_meter < 0.000001f) s->output_meter = 0;
+  atomic_store_explicit(&s->input_peak_bits, bits(s->input_meter), memory_order_relaxed);
+  atomic_store_explicit(&s->output_peak_bits, bits(s->output_meter), memory_order_relaxed);
+}
 void ob_signal_render(OBSignal *s, float *out, uint32_t n) {
   memset(out, 0, n * 2 * sizeof(float));
   uint64_t w = atomic_load_explicit(&s->written, memory_order_acquire);
   if (!s->primed) {
     uint64_t r = atomic_load_explicit(&s->released, memory_order_relaxed);
-    if (w - r < TARGET + n + TAPS)
+    if (w - r < TARGET + n + TAPS) {
+      publish_meters(s, 0, 0, n);
       return;
+    }
     s->position = (double)w - TARGET - n;
     s->primed = true;
   }
@@ -109,6 +125,7 @@ void ob_signal_render(OBSignal *s, float *out, uint32_t n) {
     s->primed = false;
     atomic_store_explicit(&s->released, w > TAPS ? w - TAPS : 0,
                           memory_order_release);
+    publish_meters(s, 0, 0, n);
     return;
   }
   float target =
@@ -137,10 +154,7 @@ void ob_signal_render(OBSignal *s, float *out, uint32_t n) {
   }
   atomic_store_explicit(&s->released, (uint64_t)s->position - 15,
                         memory_order_release);
-  atomic_store_explicit(&s->input_peak_bits, bits(in_peak),
-                        memory_order_relaxed);
-  atomic_store_explicit(&s->output_peak_bits, bits(out_peak),
-                        memory_order_relaxed);
+  publish_meters(s, in_peak, out_peak, n);
   atomic_store_explicit(&s->fill, (uint32_t)(w - (uint64_t)s->position),
                         memory_order_relaxed);
   atomic_fetch_add_explicit(&s->clipped, clipped, memory_order_relaxed);
