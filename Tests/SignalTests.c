@@ -92,13 +92,14 @@ static void meters(void) {
   }
   for (unsigned i = 0; i < 960; ++i) assert(out[i] == 0);
   float peak = ob_signal_stats(s).output_peak;
-  assert(peak > 0.5f && peak < 0.75f);
-  for (unsigned i = 0; i < 100; ++i) {
+  assert(peak > 0.01f && peak < 0.75f);
+  for (unsigned i = 0; i < 30; ++i) {
     assert(ob_signal_push(s, in, 480));
     ob_signal_render(s, out, 480);
   }
-  // Exactly one second of silence lowers the displayed level by 24 dB.
-  assert(fabsf(20 * log10f(ob_signal_stats(s).output_peak / peak) + 24) < 0.001f);
+  // A 300 ms silence interval lowers the display by 60 dB, rather than
+  // leaving the previous speech peak visible for several seconds.
+  assert(fabsf(20 * log10f(ob_signal_stats(s).output_peak / peak) + 60) < 0.001f);
   for (unsigned i = 0; i < 960; ++i) in[i] = 0.9f;
   bool rose = false;
   for (unsigned i = 0; i < 8; ++i) {

@@ -93,10 +93,10 @@ bool ob_signal_push(OBSignal *s, const float *in, uint32_t n) {
   return true;
 }
 static void publish_meters(OBSignal *s, float input, float output, uint32_t n) {
-  // Display-only peak envelope: immediate attack, 24 dB/second release at
+  // Display-only peak envelope: immediate attack, 200 dB/second release at
   // the fixed 48 kHz rate. Every rendered block contributes, including those
   // between UI reads. This never changes the audio samples or buffers.
-  float release = powf(10.0f, -24.0f * (float)n / (20.0f * 48000.0f));
+  float release = powf(10.0f, -200.0f * (float)n / (20.0f * 48000.0f));
   s->input_meter = fmaxf(input, s->input_meter * release);
   s->output_meter = fmaxf(output, s->output_meter * release);
   if (s->input_meter < 0.000001f) s->input_meter = 0;

@@ -72,7 +72,7 @@ it is the feed into the virtual microphone, not a speaker.
 The virtual input supplies silence when no matching audio is available.
 
 Meters target 60 updates per second with one-frame linear interpolation.
-Their display-only peak envelope has immediate attack and a 24 dB/second
+Their display-only peak envelope has immediate attack and a 200 dB/second
 release; numeric readouts update five times per second. These are level
 indicators, not calibrated loudness meters. Meter smoothing does not alter audio.
 
