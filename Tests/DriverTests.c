@@ -8,6 +8,21 @@ static OSStatus notify(AudioServerPlugInHostRef h, AudioObjectID o, UInt32 n,
   return noErr;
 }
 static AudioServerPlugInHostInterface fake_host = {.PropertiesChanged = notify};
+static void check_string(AudioObjectID obj, AudioObjectPropertySelector sel,
+                         CFStringRef expected) {
+  AudioObjectPropertyAddress a = {sel, kAudioObjectPropertyScopeGlobal, 0};
+  UInt32 bytes = 0, actual = 0;
+  CFStringRef value = NULL;
+  Boolean writable = true;
+  assert(interface.HasProperty(driver, obj, 10, &a));
+  assert(interface.IsPropertySettable(driver, obj, 10, &a, &writable) == 0 && !writable);
+  assert(interface.GetPropertyDataSize(driver, obj, 10, &a, 0, NULL, &bytes) == 0 &&
+         bytes == sizeof(value));
+  assert(interface.GetPropertyData(driver, obj, 10, &a, 0, NULL, bytes, &actual,
+                                   &value) == 0 && actual == bytes);
+  assert(CFEqual(value, expected));
+  CFRelease(value);
+}
 static void check(AudioObjectID obj, AudioObjectPropertySelector sel,
                   AudioObjectPropertyScope scope, UInt32 expected) {
   AudioObjectPropertyAddress a = {sel, scope, 0};
@@ -28,6 +43,54 @@ int main(void) {
     check(o, kAudioObjectPropertyClass, kAudioObjectPropertyScopeGlobal, 4);
     check(o, kAudioObjectPropertyOwner, kAudioObjectPropertyScopeGlobal, 4);
     check(o, kAudioObjectPropertyBaseClass, kAudioObjectPropertyScopeGlobal, 4);
+    check_string(o, kAudioObjectPropertyManufacturer, CFSTR("OpenBlue"));
+    check_string(o, kAudioObjectPropertyName,
+                 o == INPUT ? CFSTR("OpenBlue Input") :
+                 o == OUTPUT ? CFSTR("OpenBlue Feed") : CFSTR("OpenBlue"));
+    check(o, kAudioObjectPropertyOwnedObjects, kAudioObjectPropertyScopeGlobal,
+          o == PLUGIN ? 4 : o == DEVICE ? 8 : 0);
+  }
+  check_string(PLUGIN, kAudioPlugInPropertyBundleID, CFSTR("org.openblue.driver"));
+  check_string(PLUGIN, kAudioPlugInPropertyResourceBundle, CFSTR(""));
+  check_string(DEVICE, kAudioDevicePropertyDeviceUID, CFSTR("org.openblue.virtual-device"));
+  check_string(DEVICE, kAudioDevicePropertyModelUID, CFSTR("org.openblue.virtual-model"));
+  check(PLUGIN, kAudioPlugInPropertyDeviceList, kAudioObjectPropertyScopeGlobal, 4);
+  check(PLUGIN, kAudioPlugInPropertyBoxList, kAudioObjectPropertyScopeGlobal, 0);
+  AudioObjectPropertyAddress translate = {kAudioPlugInPropertyTranslateUIDToDevice,
+                                          kAudioObjectPropertyScopeGlobal, 0};
+  CFStringRef uid = CFSTR("org.openblue.virtual-device");
+  UInt32 translated = 0, translated_size = 0;
+  assert(interface.HasProperty(driver, PLUGIN, 10, &translate));
+  assert(interface.GetPropertyDataSize(driver, PLUGIN, 10, &translate,
+                                       sizeof(uid), &uid, &translated_size) == 0 &&
+         translated_size == sizeof(translated));
+  assert(interface.GetPropertyData(driver, PLUGIN, 10, &translate, sizeof(uid), &uid,
+                                   sizeof(translated), &translated_size, &translated) == 0 &&
+         translated == DEVICE);
+  const AudioObjectPropertySelector scalars[] = {
+      kAudioDevicePropertyTransportType, kAudioDevicePropertyClockDomain,
+      kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyDeviceIsRunning,
+      kAudioDevicePropertyIsHidden, kAudioDevicePropertyZeroTimeStampPeriod};
+  for (unsigned i = 0; i < sizeof(scalars) / sizeof(scalars[0]); ++i)
+    check(DEVICE, scalars[i], kAudioObjectPropertyScopeGlobal, 4);
+  check(DEVICE, kAudioDevicePropertyRelatedDevices, kAudioObjectPropertyScopeGlobal, 4);
+  check(DEVICE, kAudioObjectPropertyControlList, kAudioObjectPropertyScopeGlobal, 0);
+  check(DEVICE, kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal, 8);
+  for (unsigned o = INPUT; o <= OUTPUT; ++o) {
+    const AudioObjectPropertySelector stream_scalars[] = {
+        kAudioStreamPropertyIsActive, kAudioStreamPropertyDirection,
+        kAudioStreamPropertyTerminalType, kAudioStreamPropertyStartingChannel,
+        kAudioStreamPropertyLatency};
+    for (unsigned i = 0; i < sizeof(stream_scalars) / sizeof(stream_scalars[0]); ++i)
+      check(o, stream_scalars[i], kAudioObjectPropertyScopeGlobal, 4);
+    check(o, kAudioStreamPropertyVirtualFormat, kAudioObjectPropertyScopeGlobal,
+          sizeof(AudioStreamBasicDescription));
+    check(o, kAudioStreamPropertyPhysicalFormat, kAudioObjectPropertyScopeGlobal,
+          sizeof(AudioStreamBasicDescription));
+    check(o, kAudioStreamPropertyAvailableVirtualFormats, kAudioObjectPropertyScopeGlobal,
+          sizeof(AudioStreamRangedDescription));
+    check(o, kAudioStreamPropertyAvailablePhysicalFormats, kAudioObjectPropertyScopeGlobal,
+          sizeof(AudioStreamRangedDescription));
   }
   check(DEVICE, kAudioObjectPropertyOwnedObjects,
         kAudioObjectPropertyScopeGlobal, 8);
@@ -41,6 +104,9 @@ int main(void) {
     check(DEVICE, kAudioDevicePropertySafetyOffset, scope, 4);
     check(DEVICE, kAudioDevicePropertyDeviceCanBeDefaultDevice, scope, 4);
     check(DEVICE, kAudioDevicePropertyDeviceCanBeDefaultSystemDevice, scope, 4);
+    check(DEVICE, kAudioDevicePropertyPreferredChannelsForStereo, scope, 8);
+    check(DEVICE, kAudioDevicePropertyPreferredChannelLayout, scope,
+          offsetof(AudioChannelLayout, mChannelDescriptions));
   }
   check(DEVICE, kAudioDevicePropertyAvailableNominalSampleRates,
         kAudioObjectPropertyScopeGlobal, sizeof(AudioValueRange));

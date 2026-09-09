@@ -5,8 +5,8 @@ Its goal is local voice processing and a virtual microphone without Logitech G H
 ## Development status
 
 The first slice implements capture, gain, bypass, meters, settings persistence,
-and a virtual microphone. It is **not yet validated on installed hardware** and
-is not a production release or a complete Blue VO!CE replacement.
+and a virtual microphone. Installed-hardware acceptance is in progress.
+It is not a production release or a complete Blue VO!CE replacement.
 
 The application uses SwiftUI and two HAL audio units. A C AudioServerPlugIn
 exposes a stereo input and output at 48 kHz. The application writes processed
@@ -89,10 +89,23 @@ readers, driver property and client lifecycle contracts, and settings integrity.
 They do not prove that macOS loads the installed plug-in or that real clients
 receive Yeti audio.
 
-Release acceptance still requires installed-device discovery, two simultaneous
-input clients, audible Yeti processing, start/stop and reconnection, settings
-after restart, and measured latency, CPU load, and dropouts. The clock bridge
-and virtual input both buffer audio; end-to-end latency is not yet measured.
+On the tested Apple Silicon host running macOS 26.6.2, the installed driver
+was discovered and QuickTime recorded and played back Yeti audio. Gain, bypass,
+settings after app restart, simultaneous QuickTime and Meet input, continued
+Meet input after QuickTime quit, and capture stopping after Meet closed were
+verified interactively.
+
+With the app window visible and one external input process active, sampled
+app CPU usage was approximately 10–14% of one core and physical memory footprint
+was approximately 33–37 MB. The displayed underrun and overrun counters stayed
+at zero during the observation. One dual-input correlation measurement found
+55.125 ms additional delay relative to direct Yeti input (correlation 0.90868,
+0.125 ms search grid). This is a software-path comparison, not acoustic
+end-to-end latency or a guarantee for other hardware and workloads.
+
+Reconnect acceptance and numeric display-cadence measurement remain pending.
+The user accepted the meter's visual response; its 60 Hz timer target is not
+an independently measured rendering frame rate.
 
 ## API references
 
