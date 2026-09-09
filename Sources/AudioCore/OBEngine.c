@@ -12,6 +12,7 @@ struct OBEngine {
   float capture[MAX_FRAMES * 2];
   _Atomic int32_t error;
   _Atomic uint64_t callback_max_ticks;
+  _Atomic uint64_t captured_frames, render_frames;
 };
 static void failure(OBEngine *e, OSStatus status) {
   int32_t expected = 0;
@@ -31,6 +32,7 @@ static OSStatus capture(void *context, AudioUnitRenderActionFlags *flags,
     failure(e, status);
     return noErr;
   }
+  atomic_fetch_add_explicit(&e->captured_frames, n, memory_order_relaxed);
   ob_signal_push(e->signal, e->capture, n);
   return noErr;
 }
@@ -50,6 +52,7 @@ static OSStatus render(void *context, AudioUnitRenderActionFlags *flags,
     return noErr;
   }
   ob_signal_render(e->signal, buffers->mBuffers[0].mData, n);
+  atomic_fetch_add_explicit(&e->render_frames, n, memory_order_relaxed);
   uint64_t elapsed = mach_absolute_time() - start;
   if (elapsed >
       atomic_load_explicit(&e->callback_max_ticks, memory_order_relaxed))
@@ -177,5 +180,7 @@ void ob_engine_gain(OBEngine *e, float db, bool bypass) {
 }
 OBEngineStats ob_engine_stats(OBEngine *e) {
   return (OBEngineStats){ob_signal_stats(e->signal), atomic_load(&e->error),
-                         atomic_load(&e->callback_max_ticks)};
+                         atomic_load(&e->callback_max_ticks),
+                         atomic_load(&e->captured_frames),
+                         atomic_load(&e->render_frames)};
 }

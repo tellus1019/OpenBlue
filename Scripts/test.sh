@@ -10,4 +10,8 @@ xcrun clang -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
 xcrun clang -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
     Tests/DriverTests.c -framework CoreAudio -framework CoreFoundation -o .build/slice1-tests/driver
 .build/slice1-tests/driver
+xcrun clang -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
+    -I Sources/AudioCore/include Tests/EngineDiagnosticsTests.c Sources/AudioCore/OBSignal.c \
+    -framework AudioToolbox -framework CoreAudio -o .build/slice1-tests/engine-diagnostics
+.build/slice1-tests/engine-diagnostics
 swift test --scratch-path .build/slice1
