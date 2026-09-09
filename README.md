@@ -5,7 +5,8 @@ Its goal is local voice processing and a virtual microphone without Logitech G H
 ## Development status
 
 The first slice implements capture, gain, bypass, meters, settings persistence,
-and a virtual microphone. Installed-hardware acceptance is in progress.
+and a virtual microphone. The owner accepted the installed first-slice workflow
+and meter usability on September 10, 2026.
 It is not a production release or a complete Blue VO!CE replacement.
 
 The application uses SwiftUI and two HAL audio units. A C AudioServerPlugIn
@@ -108,7 +109,7 @@ OpenBlue enabled: capture stopped on disconnect and resumed after reconnect,
 with audible input confirmed by the tester. Post-reconnect underrun and overrun
 counters remained zero. An earlier failed reconnect remains unexplained; the
 successful retest does not establish that its cause has been fixed.
-Numeric display-cadence measurement remains pending.
+Numeric rendering cadence has not been independently measured.
 The user accepted the meter's visual response; its 60 Hz timer target is not
 an independently measured rendering frame rate.
 
