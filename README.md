@@ -103,7 +103,11 @@ at zero during the observation. One dual-input correlation measurement found
 0.125 ms search grid). This is a software-path comparison, not acoustic
 end-to-end latency or a guarantee for other hardware and workloads.
 
-Reconnect acceptance failed in a hardware test and is under investigation.
+A reconnect test on the current build passed with QuickTime left open and
+OpenBlue enabled: capture stopped on disconnect and resumed after reconnect,
+with audible input confirmed by the tester. Post-reconnect underrun and overrun
+counters remained zero. An earlier failed reconnect remains unexplained; the
+successful retest does not establish that its cause has been fixed.
 Numeric display-cadence measurement remains pending.
 The user accepted the meter's visual response; its 60 Hz timer target is not
 an independently measured rendering frame rate.
