@@ -63,15 +63,19 @@ private func devices() -> [AudioDevice] {
   }
 }
 
-@MainActor final class AudioModel: ObservableObject {
-  @Published var settings = AudioSettings()
-  @Published var enabled = false
-  @Published var status = "Stopped"
+@MainActor final class MeterDisplay: ObservableObject {
   @Published var inputPeak: Float = 0
   @Published var outputPeak: Float = 0
   @Published var inputReadout: Float = 0
   @Published var outputReadout: Float = 0
   @Published var diagnostics = ""
+}
+
+@MainActor final class AudioModel: ObservableObject {
+  @Published var settings = AudioSettings()
+  @Published var enabled = false
+  @Published var status = "Stopped"
+  let meterDisplay = MeterDisplay()
   @Published var availableYetis: [AudioDevice] = []
   @Published var settingsError: String?
   private var engine: OpaquePointer?
@@ -271,22 +275,22 @@ private func devices() -> [AudioDevice] {
     engine = nil
     engineInput = 0
     engineOutput = 0
-    inputPeak = 0
-    outputPeak = 0
-    inputReadout = 0
-    outputReadout = 0
+    meterDisplay.inputPeak = 0
+    meterDisplay.outputPeak = 0
+    meterDisplay.inputReadout = 0
+    meterDisplay.outputReadout = 0
     lastReadoutTime = 0
   }
   private func meters() {
     guard let engine else { return }
     let stats = ob_engine_stats(engine)
-    inputPeak = stats.signal.input_peak
-    outputPeak = stats.signal.output_peak
+    meterDisplay.inputPeak = stats.signal.input_peak
+    meterDisplay.outputPeak = stats.signal.output_peak
     let now = ProcessInfo.processInfo.systemUptime
     if now - lastReadoutTime >= 0.2 {
-      inputReadout = inputPeak
-      outputReadout = outputPeak
-      diagnostics =
+      meterDisplay.inputReadout = meterDisplay.inputPeak
+      meterDisplay.outputReadout = meterDisplay.outputPeak
+      meterDisplay.diagnostics =
         "Underruns: \(stats.signal.underruns)  Overruns: \(stats.signal.overruns)  Clipped: \(stats.signal.clipped_samples)"
       lastReadoutTime = now
     }
@@ -321,6 +325,17 @@ struct Meter: View {
       .frame(height: 6)
       .clipShape(Capsule())
       .accessibilityHidden(true) // The adjacent text exposes the same level.
+    }
+  }
+}
+
+struct MeterPanel: View {
+  @ObservedObject var display: MeterDisplay
+  var body: some View {
+    VStack(spacing: 22) {
+      Meter(title: "Input", peak: display.inputPeak, readout: display.inputReadout)
+      Meter(title: "Output", peak: display.outputPeak, readout: display.outputReadout)
+      Text(display.diagnostics).font(.caption).foregroundStyle(.secondary)
     }
   }
 }
@@ -370,9 +385,7 @@ struct ContentView: View {
               model.save()
             }))
       }.disabled(model.settingsError != nil)
-      Meter(title: "Input", peak: model.inputPeak, readout: model.inputReadout)
-      Meter(title: "Output", peak: model.outputPeak, readout: model.outputReadout)
-      Text(model.diagnostics).font(.caption).foregroundStyle(.secondary)
+      MeterPanel(display: model.meterDisplay)
       Text(
         "Choose OpenBlue as the input in your recording or meeting app. Keep OpenBlue running. Audio stays on this Mac."
       )
