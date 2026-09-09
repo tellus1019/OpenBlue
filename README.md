@@ -103,7 +103,8 @@ at zero during the observation. One dual-input correlation measurement found
 0.125 ms search grid). This is a software-path comparison, not acoustic
 end-to-end latency or a guarantee for other hardware and workloads.
 
-Reconnect acceptance and numeric display-cadence measurement remain pending.
+Reconnect acceptance failed in a hardware test and is under investigation.
+Numeric display-cadence measurement remains pending.
 The user accepted the meter's visual response; its 60 Hz timer target is not
 an independently measured rendering frame rate.
 
