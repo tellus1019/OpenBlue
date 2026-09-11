@@ -17,5 +17,6 @@ OBEngine *ob_engine_create(AudioDeviceID input, AudioDeviceID output,
 OSStatus ob_engine_start(OBEngine *engine);
 void ob_engine_destroy(OBEngine *engine);
 void ob_engine_gain(OBEngine *engine, float db, bool bypass);
+bool ob_engine_parameters(OBEngine *engine, const float *values, uint32_t count);
 OBEngineStats ob_engine_stats(OBEngine *engine);
 #endif
