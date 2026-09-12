@@ -8,8 +8,10 @@ The first slice implements capture, gain, bypass, meters, settings persistence,
 and a virtual microphone. The owner accepted the installed first-slice workflow
 and meter usability on September 10, 2026.
 The second slice adds all core processors, their controls, gain-reduction
-meters, and schema-2 settings migration. Its hardware and listening acceptance
-is still pending. It is not a production release or a complete Blue VO!CE replacement.
+meters, and schema-2 settings migration. The owner accepted its functional
+behavior on September 13, 2026. Sound-quality improvements and runtime
+optimization remain follow-up work before version 1.0. It is not a production
+release or a complete Blue VO!CE replacement.
 
 The application uses SwiftUI and two HAL audio units. A C AudioServerPlugIn
 exposes a stereo input and output at 48 kHz. The application writes processed

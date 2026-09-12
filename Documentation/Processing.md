@@ -127,8 +127,9 @@ overwriting the source. Launch always starts capture disabled.
 The automated signal tests use analytical filter responses, level steps,
 impulses, independent stereo signals, and fixed-seed noise. Their passing
 results establish the tested numerical behavior, not natural speech quality.
-Second-slice listening, UI usability, real-client continuity, lifecycle
-persistence, and whole-app performance acceptance remain pending.
+The second slice is accepted for functional behavior. Sound quality is not yet
+satisfactory, and quality improvements and runtime optimization remain follow-up
+work before version 1.0. This is not a final sound-quality or performance sign-off.
 
 ## Implementation references
 
