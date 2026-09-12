@@ -65,11 +65,22 @@ private func devices() -> [AudioDevice] {
   }
 }
 
+@MainActor final class MeterLevels: ObservableObject {
+  private(set) var reductions = Array(repeating: Float(0), count: 9)
+  private(set) var inputPeak: Float = 0
+  private(set) var outputPeak: Float = 0
+
+  func update(reductions: [Float], inputPeak: Float, outputPeak: Float) {
+    objectWillChange.send()
+    self.reductions = reductions
+    self.inputPeak = inputPeak
+    self.outputPeak = outputPeak
+  }
+}
+
 @MainActor final class MeterDisplay: ObservableObject {
-  @Published var reductions = Array(repeating: Float(0), count: 9)
+  let levels = MeterLevels()
   @Published var reductionReadouts = Array(repeating: Float(0), count: 9)
-  @Published var inputPeak: Float = 0
-  @Published var outputPeak: Float = 0
   @Published var inputReadout: Float = 0
   @Published var outputReadout: Float = 0
   @Published var diagnostics = ""
@@ -307,10 +318,9 @@ private func devices() -> [AudioDevice] {
     engine = nil
     engineInput = 0
     engineOutput = 0
-    meterDisplay.reductions = Array(repeating: 0, count: 9)
+    meterDisplay.levels.update(
+      reductions: Array(repeating: 0, count: 9), inputPeak: 0, outputPeak: 0)
     meterDisplay.reductionReadouts = Array(repeating: 0, count: 9)
-    meterDisplay.inputPeak = 0
-    meterDisplay.outputPeak = 0
     meterDisplay.inputReadout = 0
     meterDisplay.outputReadout = 0
     lastReadoutTime = 0
@@ -318,16 +328,18 @@ private func devices() -> [AudioDevice] {
   private func meters() {
     guard let engine else { return }
     let stats = ob_engine_stats(engine)
-    meterDisplay.reductions = withUnsafeBytes(of: stats.signal.dsp.reduction_db) {
+    let reductions = withUnsafeBytes(of: stats.signal.dsp.reduction_db) {
       Array($0.bindMemory(to: Float.self))
     }
-    meterDisplay.inputPeak = stats.signal.input_peak
-    meterDisplay.outputPeak = stats.signal.output_peak
+    meterDisplay.levels.update(
+      reductions: reductions,
+      inputPeak: stats.signal.input_peak,
+      outputPeak: stats.signal.output_peak)
     let now = ProcessInfo.processInfo.systemUptime
     if now - lastReadoutTime >= 0.2 {
-      meterDisplay.reductionReadouts = meterDisplay.reductions
-      meterDisplay.inputReadout = meterDisplay.inputPeak
-      meterDisplay.outputReadout = meterDisplay.outputPeak
+      meterDisplay.reductionReadouts = reductions
+      meterDisplay.inputReadout = stats.signal.input_peak
+      meterDisplay.outputReadout = stats.signal.output_peak
       meterDisplay.diagnostics =
         "Underruns: \(stats.signal.underruns)  Overruns: \(stats.signal.overruns)  Clipped: \(stats.signal.clipped_samples)\nFrames: capture \(stats.captured_frames) → DSP \(stats.signal.output_frames) → render \(stats.render_frames)"
       let callbackUS = Double(stats.callback_max_ticks) * nanosecondsPerTick / 1000
@@ -344,10 +356,51 @@ private func devices() -> [AudioDevice] {
   }
 }
 
+struct PeakMeterBar: View {
+  @ObservedObject var levels: MeterLevels
+  let output: Bool
+
+  var body: some View {
+    let peak = output ? levels.outputPeak : levels.inputPeak
+    ZStack(alignment: .leading) {
+      Rectangle().fill(.secondary.opacity(0.2))
+      Rectangle().fill(peak >= 0.99 ? Color.red : Color.primary)
+        .scaleEffect(
+          x: max(0, min(1, (Double(20 * log10(max(peak, 0.000001))) + 60) / 60)),
+          y: 1, anchor: .leading)
+        // Interpolate for one display interval, not a long attack animation.
+        .animation(.linear(duration: 1.0 / 60.0), value: peak)
+    }
+    .frame(height: 6)
+    .clipShape(Capsule())
+    .accessibilityHidden(true) // The adjacent text exposes the same level.
+  }
+}
+
+struct ReductionMeterBar: View {
+  @ObservedObject var levels: MeterLevels
+  let index: Int
+
+  var body: some View {
+    let value = levels.reductions[index]
+    ZStack(alignment: .leading) {
+      Rectangle().fill(.secondary.opacity(0.2))
+      Rectangle().fill(.orange)
+        .scaleEffect(x: max(0, min(1, Double(value) / 30)), y: 1, anchor: .leading)
+        .animation(.linear(duration: 1.0 / 60.0), value: value)
+    }
+    .frame(height: 6)
+    .frame(maxWidth: .infinity)
+    .clipShape(Capsule())
+    .accessibilityHidden(true) // The adjacent text exposes the same reduction.
+  }
+}
+
 struct Meter: View {
   let title: String
-  let peak: Float
   let readout: Float
+  let levels: MeterLevels
+  let output: Bool
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       HStack {
@@ -355,43 +408,30 @@ struct Meter: View {
         Spacer()
         Text(readout > 0 ? String(format: "%.1f dBFS", 20 * log10(readout)) : "−∞ dBFS").monospacedDigit()
       }
-      ZStack(alignment: .leading) {
-        Rectangle().fill(.secondary.opacity(0.2))
-        Rectangle().fill(peak >= 0.99 ? Color.red : Color.primary)
-          .scaleEffect(
-            x: max(0, min(1, (Double(20 * log10(max(peak, 0.000001))) + 60) / 60)),
-            y: 1, anchor: .leading)
-          // Interpolate for one display interval, not a long attack animation.
-          .animation(.linear(duration: 1.0 / 60.0), value: peak)
-      }
-      .frame(height: 6)
-      .clipShape(Capsule())
-      .accessibilityHidden(true) // The adjacent text exposes the same level.
+      PeakMeterBar(levels: levels, output: output)
     }
   }
 }
 
 struct MeterPanel: View {
-  private func reduction(_ label: String, value: Float, readout: Float) -> some View {
+  private func reduction(_ label: String, index: Int, readout: Float) -> some View {
     VStack(alignment: .leading) {
       HStack {
         Text(label + " reduction")
         Spacer()
         Text(String(format: "%.1f dB", readout)).monospacedDigit()
       }.font(.caption)
-      ProgressView(value: min(Double(value), 30), total: 30)
-        .tint(.orange)
-        .accessibilityValue(String(format: "%.1f dB", value))
+      ReductionMeterBar(levels: display.levels, index: index)
     }
   }
   @ObservedObject var display: MeterDisplay
   var body: some View {
     VStack(spacing: 22) {
-      Meter(title: "Input", peak: display.inputPeak, readout: display.inputReadout)
-      Meter(title: "Output", peak: display.outputPeak, readout: display.outputReadout)
+      Meter(title: "Input", readout: display.inputReadout, levels: display.levels, output: false)
+      Meter(title: "Output", readout: display.outputReadout, levels: display.levels, output: true)
       HStack {
-        reduction("Compressor", value: display.reductions[7], readout: display.reductionReadouts[7])
-        reduction("Limiter", value: display.reductions[8], readout: display.reductionReadouts[8])
+        reduction("Compressor", index: 7, readout: display.reductionReadouts[7])
+        reduction("Limiter", index: 8, readout: display.reductionReadouts[8])
       }
       Text(display.diagnostics).font(.caption).foregroundStyle(.secondary)
     }
