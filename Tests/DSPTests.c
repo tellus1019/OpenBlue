@@ -154,6 +154,16 @@ static void band_processing(void) {
   assert(transfer(50,.2)<-5);
   assert(fabs(transfer(5000,.2))<.2);
   assert(fabs(transfer(50,.0001))<.1);
+  defaults(); config[OBP_POPPER_ON]=1;
+  config[OBP_POPPER_HZ]=150; config[OBP_POPPER_THRESHOLD]=-40;
+  config[OBP_POPPER_RANGE]=12; config[OBP_POPPER_ATTACK]=1;
+  assert(transfer(150,.1)<=.01);
+  assert(transfer(300,.1)<=.01);
+  defaults(); config[OBP_ESSER_ON]=1;
+  config[OBP_ESSER_HZ]=6000; config[OBP_ESSER_THRESHOLD]=-40;
+  config[OBP_ESSER_RANGE]=12; config[OBP_ESSER_ATTACK]=1;
+  assert(transfer(3000,.1)<=.01);
+  assert(transfer(6000,.1)<=.01);
   puts("PASS de-esser/de-popper target bands and below-threshold preservation");
 }
 static uint32_t noise_state=42;

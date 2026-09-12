@@ -42,6 +42,8 @@ Final clipping to ±1 remains active in bypass and is counted in diagnostics.
   It responds to level, not speech recognition, and can affect low voices.
   Both band processors have second-order Butterworth extraction filters;
   the threshold refers to that filtered band, not the full-band input meter.
+  Audio attenuation uses a separate first-order complementary low/high split,
+  so recombining an attenuated target band does not boost steady-state gain.
 - **Compressor:** linked peak compression with a 6 dB soft knee. Ratio describes
   the steady-state slope above the knee. Makeup gain follows compression.
 - **Limiter:** linked sample-peak limiting with 96 frames (2 ms) of lookahead.
@@ -131,5 +133,6 @@ persistence, and whole-app performance acceptance remain pending.
 ## Implementation references
 
 - [W3C Audio EQ Cookbook](https://www.w3.org/TR/audio-eq-cookbook/)
+- [Faust filters library](https://faustlibraries.grame.fr/libs/filters/)
 - [Apple vDSP FFT](https://developer.apple.com/documentation/accelerate/vdsp_fft_zip)
 - [Apple Fourier transform guide](https://developer.apple.com/library/archive/documentation/Performance/Conceptual/vDSP_Programming_Guide/UsingFourierTransforms/UsingFourierTransforms.html)
