@@ -3,6 +3,7 @@ import AppKit
 import AudioCore
 import AudioClients
 import CoreAudio
+import Darwin
 import OSLog
 import Settings
 import SwiftUI
@@ -64,9 +65,22 @@ private func devices() -> [AudioDevice] {
   }
 }
 
+@MainActor final class MeterLevels: ObservableObject {
+  private(set) var reductions = Array(repeating: Float(0), count: 9)
+  private(set) var inputPeak: Float = 0
+  private(set) var outputPeak: Float = 0
+
+  func update(reductions: [Float], inputPeak: Float, outputPeak: Float) {
+    objectWillChange.send()
+    self.reductions = reductions
+    self.inputPeak = inputPeak
+    self.outputPeak = outputPeak
+  }
+}
+
 @MainActor final class MeterDisplay: ObservableObject {
-  @Published var inputPeak: Float = 0
-  @Published var outputPeak: Float = 0
+  let levels = MeterLevels()
+  @Published var reductionReadouts = Array(repeating: Float(0), count: 9)
   @Published var inputReadout: Float = 0
   @Published var outputReadout: Float = 0
   @Published var diagnostics = ""
@@ -88,6 +102,11 @@ private func devices() -> [AudioDevice] {
   private var formatListener: AudioObjectPropertyListenerBlock?
   private var timer: Timer?
   private var lastReadoutTime: TimeInterval = 0
+  private let nanosecondsPerTick: Double = {
+    var info = mach_timebase_info_data_t()
+    mach_timebase_info(&info)
+    return Double(info.numer) / Double(info.denom)
+  }()
   private var awake = true
   private var failed = false
   private let store: SettingsStore
@@ -141,7 +160,16 @@ private func devices() -> [AudioDevice] {
       enabled = false
       stopAudio()
     }
-    if let engine { ob_engine_gain(engine, settings.gainDB, settings.bypass) }
+    if let engine {
+      let applied = settings.dspValues.withUnsafeBufferPointer {
+        ob_engine_parameters(engine, $0.baseAddress, UInt32($0.count))
+      }
+      if !applied {
+        settingsError = "Processing settings could not be applied."
+        enabled = false
+        stopAudio()
+      }
+    }
   }
   func select(_ uid: String) {
     settings.deviceUID = uid
@@ -258,7 +286,15 @@ private func devices() -> [AudioDevice] {
         status = "Audio setup failed (\(error)). Both devices must use 48 kHz stereo."
         return
       }
-      ob_engine_gain(newEngine, settings.gainDB, settings.bypass)
+      let applied = settings.dspValues.withUnsafeBufferPointer {
+        ob_engine_parameters(newEngine, $0.baseAddress, UInt32($0.count))
+      }
+      guard applied else {
+        ob_engine_destroy(newEngine)
+        failed = true
+        status = "Processing settings could not be applied."
+        return
+      }
       let start = ob_engine_start(newEngine)
       guard start == noErr else {
         ob_engine_destroy(newEngine)
@@ -269,7 +305,7 @@ private func devices() -> [AudioDevice] {
       engine = newEngine
       engineInput = input.id
       engineOutput = output.id
-      audioLog.info("Audio started: input=\(input.id) output=\(output.id) consumers=\(count)")
+      audioLog.info("Audio started: input=\(input.id) output=\(output.id) consumers=\(count) dspDelayFrames=\(OB_DSP_LATENCY)")
     }
     status = "Processing · \(count) external input process(es)"
   }
@@ -282,8 +318,9 @@ private func devices() -> [AudioDevice] {
     engine = nil
     engineInput = 0
     engineOutput = 0
-    meterDisplay.inputPeak = 0
-    meterDisplay.outputPeak = 0
+    meterDisplay.levels.update(
+      reductions: Array(repeating: 0, count: 9), inputPeak: 0, outputPeak: 0)
+    meterDisplay.reductionReadouts = Array(repeating: 0, count: 9)
     meterDisplay.inputReadout = 0
     meterDisplay.outputReadout = 0
     lastReadoutTime = 0
@@ -291,14 +328,24 @@ private func devices() -> [AudioDevice] {
   private func meters() {
     guard let engine else { return }
     let stats = ob_engine_stats(engine)
-    meterDisplay.inputPeak = stats.signal.input_peak
-    meterDisplay.outputPeak = stats.signal.output_peak
+    let reductions = withUnsafeBytes(of: stats.signal.dsp.reduction_db) {
+      Array($0.bindMemory(to: Float.self))
+    }
+    meterDisplay.levels.update(
+      reductions: reductions,
+      inputPeak: stats.signal.input_peak,
+      outputPeak: stats.signal.output_peak)
     let now = ProcessInfo.processInfo.systemUptime
     if now - lastReadoutTime >= 0.2 {
-      meterDisplay.inputReadout = meterDisplay.inputPeak
-      meterDisplay.outputReadout = meterDisplay.outputPeak
+      meterDisplay.reductionReadouts = reductions
+      meterDisplay.inputReadout = stats.signal.input_peak
+      meterDisplay.outputReadout = stats.signal.output_peak
       meterDisplay.diagnostics =
         "Underruns: \(stats.signal.underruns)  Overruns: \(stats.signal.overruns)  Clipped: \(stats.signal.clipped_samples)\nFrames: capture \(stats.captured_frames) → DSP \(stats.signal.output_frames) → render \(stats.render_frames)"
+      let callbackUS = Double(stats.callback_max_ticks) * nanosecondsPerTick / 1000
+      meterDisplay.diagnostics += String(
+        format: "\nMax callback: %.1f µs  Invalid DSP samples: %llu",
+        callbackUS, stats.signal.dsp.invalid_samples)
       lastReadoutTime = now
     }
     if stats.error != noErr {
@@ -309,10 +356,51 @@ private func devices() -> [AudioDevice] {
   }
 }
 
+struct PeakMeterBar: View {
+  @ObservedObject var levels: MeterLevels
+  let output: Bool
+
+  var body: some View {
+    let peak = output ? levels.outputPeak : levels.inputPeak
+    ZStack(alignment: .leading) {
+      Rectangle().fill(.secondary.opacity(0.2))
+      Rectangle().fill(peak >= 0.99 ? Color.red : Color.primary)
+        .scaleEffect(
+          x: max(0, min(1, (Double(20 * log10(max(peak, 0.000001))) + 60) / 60)),
+          y: 1, anchor: .leading)
+        // Interpolate for one display interval, not a long attack animation.
+        .animation(.linear(duration: 1.0 / 60.0), value: peak)
+    }
+    .frame(height: 6)
+    .clipShape(Capsule())
+    .accessibilityHidden(true) // The adjacent text exposes the same level.
+  }
+}
+
+struct ReductionMeterBar: View {
+  @ObservedObject var levels: MeterLevels
+  let index: Int
+
+  var body: some View {
+    let value = levels.reductions[index]
+    ZStack(alignment: .leading) {
+      Rectangle().fill(.secondary.opacity(0.2))
+      Rectangle().fill(.orange)
+        .scaleEffect(x: max(0, min(1, Double(value) / 30)), y: 1, anchor: .leading)
+        .animation(.linear(duration: 1.0 / 60.0), value: value)
+    }
+    .frame(height: 6)
+    .frame(maxWidth: .infinity)
+    .clipShape(Capsule())
+    .accessibilityHidden(true) // The adjacent text exposes the same reduction.
+  }
+}
+
 struct Meter: View {
   let title: String
-  let peak: Float
   let readout: Float
+  let levels: MeterLevels
+  let output: Bool
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       HStack {
@@ -320,28 +408,31 @@ struct Meter: View {
         Spacer()
         Text(readout > 0 ? String(format: "%.1f dBFS", 20 * log10(readout)) : "−∞ dBFS").monospacedDigit()
       }
-      ZStack(alignment: .leading) {
-        Rectangle().fill(.secondary.opacity(0.2))
-        Rectangle().fill(peak >= 0.99 ? Color.red : Color.primary)
-          .scaleEffect(
-            x: max(0, min(1, (Double(20 * log10(max(peak, 0.000001))) + 60) / 60)),
-            y: 1, anchor: .leading)
-          // Interpolate for one display interval, not a long attack animation.
-          .animation(.linear(duration: 1.0 / 60.0), value: peak)
-      }
-      .frame(height: 6)
-      .clipShape(Capsule())
-      .accessibilityHidden(true) // The adjacent text exposes the same level.
+      PeakMeterBar(levels: levels, output: output)
     }
   }
 }
 
 struct MeterPanel: View {
+  private func reduction(_ label: String, index: Int, readout: Float) -> some View {
+    VStack(alignment: .leading) {
+      HStack {
+        Text(label + " reduction")
+        Spacer()
+        Text(String(format: "%.1f dB", readout)).monospacedDigit()
+      }.font(.caption)
+      ReductionMeterBar(levels: display.levels, index: index)
+    }
+  }
   @ObservedObject var display: MeterDisplay
   var body: some View {
     VStack(spacing: 22) {
-      Meter(title: "Input", peak: display.inputPeak, readout: display.inputReadout)
-      Meter(title: "Output", peak: display.outputPeak, readout: display.outputReadout)
+      Meter(title: "Input", readout: display.inputReadout, levels: display.levels, output: false)
+      Meter(title: "Output", readout: display.outputReadout, levels: display.levels, output: true)
+      HStack {
+        reduction("Compressor", index: 7, readout: display.reductionReadouts[7])
+        reduction("Limiter", index: 8, readout: display.reductionReadouts[8])
+      }
       Text(display.diagnostics).font(.caption).foregroundStyle(.secondary)
     }
   }
@@ -350,54 +441,57 @@ struct MeterPanel: View {
 struct ContentView: View {
   @ObservedObject var model: AudioModel
   var body: some View {
-    VStack(alignment: .leading, spacing: 22) {
-      HStack {
-        Text("OpenBlue").font(.largeTitle.bold())
-        Spacer()
-        Text("YETI").foregroundStyle(.secondary)
-      }
-      Text(model.status).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-      if let error = model.settingsError { Text(error).foregroundStyle(.red) }
-      if model.availableYetis.count > 1 {
-        Picker(
-          "Yeti",
-          selection: Binding(get: { model.settings.deviceUID ?? "" }, set: { model.select($0) })
-        ) {
-          ForEach(model.availableYetis) { Text($0.uid).tag($0.uid) }
-        }
-      }
-      Toggle(
-        "Enable OpenBlue", isOn: Binding(get: { model.enabled }, set: { model.setEnabled($0) })
-      )
-      .toggleStyle(.switch).disabled(model.settingsError != nil)
-      VStack(alignment: .leading) {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 22) {
         HStack {
-          Text("Gain")
+          Text("OpenBlue").font(.largeTitle.bold())
           Spacer()
-          Text(String(format: "%.1f dB", model.settings.gainDB)).monospacedDigit()
+          Text("YETI").foregroundStyle(.secondary)
         }
-        Slider(
-          value: Binding(
-            get: { model.settings.gainDB },
-            set: {
-              model.settings.gainDB = $0
-              model.save()
-            }), in: -24...12, step: 0.5)
+        Text(model.status).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        if let error = model.settingsError { Text(error).foregroundStyle(.red) }
+        if model.availableYetis.count > 1 {
+          Picker(
+            "Yeti",
+            selection: Binding(get: { model.settings.deviceUID ?? "" }, set: { model.select($0) })
+          ) {
+            ForEach(model.availableYetis) { Text($0.uid).tag($0.uid) }
+          }
+        }
         Toggle(
-          "Bypass gain",
-          isOn: Binding(
-            get: { model.settings.bypass },
-            set: {
-              model.settings.bypass = $0
-              model.save()
-            }))
-      }.disabled(model.settingsError != nil)
-      MeterPanel(display: model.meterDisplay)
-      Text(
-        "Choose OpenBlue as the input in your recording or meeting app. Keep OpenBlue running. Audio stays on this Mac."
-      )
-      .font(.callout).foregroundStyle(.secondary)
-    }.padding(28).frame(width: 460)
+          "Enable OpenBlue", isOn: Binding(get: { model.enabled }, set: { model.setEnabled($0) })
+        )
+        .toggleStyle(.switch).disabled(model.settingsError != nil)
+        VStack(alignment: .leading) {
+          HStack {
+            Text("Input gain")
+            Spacer()
+            Text(String(format: "%.1f dB", model.settings.gainDB)).monospacedDigit()
+          }
+          Slider(
+            value: Binding(
+              get: { model.settings.gainDB },
+              set: {
+                model.settings.gainDB = $0
+                model.save()
+              }), in: -24...12, step: 0.5)
+          Toggle(
+            "Bypass all processing",
+            isOn: Binding(
+              get: { model.settings.bypass },
+              set: {
+                model.settings.bypass = $0
+                model.save()
+              }))
+        }.disabled(model.settingsError != nil)
+        MeterPanel(display: model.meterDisplay)
+        ProcessingEditor(model: model)
+        Text(
+          "Choose OpenBlue as the input in your recording or meeting app. Keep OpenBlue running. Audio stays on this Mac."
+        )
+        .font(.callout).foregroundStyle(.secondary)
+      }.padding(28)
+    }.frame(width: 600, height: 760)
   }
 }
 

@@ -132,10 +132,17 @@ static void starvation(void) {
   // Repeated reads must remain silent until enough NEW samples arrive.
   for (unsigned i = 0; i < 512; ++i)
     assert(out[i] == 0);
+  for (unsigned i = 0; i < 512; ++i) in[i] = -0.25f;
   for (unsigned i = 0; i < 8; ++i)
     assert(ob_signal_push(s, in, 256));
   ob_signal_render(s, out, 256);
-  assert(fabsf(out[100] - 0.25f) < 0.00001f);
+  // Recovery must not replay samples retained by the new DSP delay line.
+  for (unsigned i = 0; i < 512; ++i) assert(out[i] == 0);
+  for (unsigned b = 0; b < 8; ++b) {
+    assert(ob_signal_push(s, in, 256));
+    ob_signal_render(s, out, 256);
+  }
+  assert(fabsf(out[100] + 0.25f) < 0.00001f);
   assert(ob_signal_stats(s).underruns == 1);
   ob_signal_destroy(s);
 }
@@ -174,7 +181,8 @@ static void *reader(void *unused) {
   }
   return NULL;
 }
-int main(void) {
+int main(int argc, char **argv) {
+  if (argc == 2 && !strcmp(argv[1], "--starvation")) { starvation(); return 0; }
   gain();
   meters();
   loopback();

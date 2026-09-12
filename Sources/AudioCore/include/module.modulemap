@@ -1,0 +1,7 @@
+module AudioCore {
+  header "OBDSP.h"
+  header "OBSignal.h"
+  header "OBEngine.h"
+  textual header "OBParameters.def"
+  export *
+}
