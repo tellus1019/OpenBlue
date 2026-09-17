@@ -73,6 +73,51 @@ static void gain(void) {
   ob_signal_destroy(s);
 }
 static OBLoopback ring;
+static void meters(void) {
+  OBSignal *s = ob_signal_create();
+  float in[960], out[960];
+  for (unsigned i = 0; i < 960; ++i) in[i] = 0.75f;
+  for (unsigned i = 0; i < 4; ++i) assert(ob_signal_push(s, in, 480));
+  for (unsigned i = 0; i < 20; ++i) {
+    assert(ob_signal_push(s, in, 480));
+    ob_signal_render(s, out, 480);
+  }
+  assert(fabsf(ob_signal_stats(s).output_peak - 0.75f) < 0.00001f);
+  memset(in, 0, sizeof(in));
+  // Even after the audible peak is gone, intervening silent blocks must not
+  // erase it before a UI read. Every rendered block contributes to the envelope.
+  for (unsigned i = 0; i < 8; ++i) {
+    assert(ob_signal_push(s, in, 480));
+    ob_signal_render(s, out, 480);
+  }
+  for (unsigned i = 0; i < 960; ++i) assert(out[i] == 0);
+  float peak = ob_signal_stats(s).output_peak;
+  assert(peak > 0.01f && peak < 0.75f);
+  for (unsigned i = 0; i < 30; ++i) {
+    assert(ob_signal_push(s, in, 480));
+    ob_signal_render(s, out, 480);
+  }
+  // A 300 ms silence interval lowers the display by 60 dB, rather than
+  // leaving the previous speech peak visible for several seconds.
+  assert(fabsf(20 * log10f(ob_signal_stats(s).output_peak / peak) + 60) < 0.001f);
+  for (unsigned i = 0; i < 960; ++i) in[i] = 0.9f;
+  bool rose = false;
+  for (unsigned i = 0; i < 8; ++i) {
+    assert(ob_signal_push(s, in, 480));
+    ob_signal_render(s, out, 480);
+    float block_peak = 0;
+    for (unsigned j = 0; j < 960; ++j) block_peak = fmaxf(block_peak, fabsf(out[j]));
+    if (block_peak > 0.8f) {
+      assert(ob_signal_stats(s).output_peak >= block_peak);
+      rose = true;
+      break;
+    }
+  }
+  assert(rose);
+  ob_signal_reset(s);
+  assert(ob_signal_stats(s).input_peak == 0 && ob_signal_stats(s).output_peak == 0);
+  ob_signal_destroy(s);
+}
 static void starvation(void) {
   OBSignal *s = ob_signal_create();
   assert(s);
@@ -131,6 +176,7 @@ static void *reader(void *unused) {
 }
 int main(void) {
   gain();
+  meters();
   loopback();
   starvation();
   ob_loop_clear(&ring);

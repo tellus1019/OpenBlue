@@ -63,13 +63,19 @@ private func devices() -> [AudioDevice] {
   }
 }
 
+@MainActor final class MeterDisplay: ObservableObject {
+  @Published var inputPeak: Float = 0
+  @Published var outputPeak: Float = 0
+  @Published var inputReadout: Float = 0
+  @Published var outputReadout: Float = 0
+  @Published var diagnostics = ""
+}
+
 @MainActor final class AudioModel: ObservableObject {
   @Published var settings = AudioSettings()
   @Published var enabled = false
   @Published var status = "Stopped"
-  @Published var inputPeak: Float = 0
-  @Published var outputPeak: Float = 0
-  @Published var diagnostics = ""
+  let meterDisplay = MeterDisplay()
   @Published var availableYetis: [AudioDevice] = []
   @Published var settingsError: String?
   private var engine: OpaquePointer?
@@ -80,6 +86,7 @@ private func devices() -> [AudioDevice] {
   private let inputClients = InputClients()
   private var formatListener: AudioObjectPropertyListenerBlock?
   private var timer: Timer?
+  private var lastReadoutTime: TimeInterval = 0
   private var awake = true
   private var failed = false
   private let store: SettingsStore
@@ -105,9 +112,11 @@ private func devices() -> [AudioDevice] {
       self, selector: #selector(sleep), name: NSWorkspace.willSleepNotification, object: nil)
     NSWorkspace.shared.notificationCenter.addObserver(
       self, selector: #selector(wake), name: NSWorkspace.didWakeNotification, object: nil)
-    timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+    let meterTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
       Task { @MainActor [weak self] in self?.meters() }
     }
+    RunLoop.main.add(meterTimer, forMode: .common)
+    timer = meterTimer
     inputClients.start { [weak self] in self?.refresh() }
     refresh()
   }
@@ -266,16 +275,25 @@ private func devices() -> [AudioDevice] {
     engine = nil
     engineInput = 0
     engineOutput = 0
-    inputPeak = 0
-    outputPeak = 0
+    meterDisplay.inputPeak = 0
+    meterDisplay.outputPeak = 0
+    meterDisplay.inputReadout = 0
+    meterDisplay.outputReadout = 0
+    lastReadoutTime = 0
   }
   private func meters() {
     guard let engine else { return }
     let stats = ob_engine_stats(engine)
-    inputPeak = stats.signal.input_peak
-    outputPeak = stats.signal.output_peak
-    diagnostics =
-      "Underruns: \(stats.signal.underruns)  Overruns: \(stats.signal.overruns)  Clipped: \(stats.signal.clipped_samples)"
+    meterDisplay.inputPeak = stats.signal.input_peak
+    meterDisplay.outputPeak = stats.signal.output_peak
+    let now = ProcessInfo.processInfo.systemUptime
+    if now - lastReadoutTime >= 0.2 {
+      meterDisplay.inputReadout = meterDisplay.inputPeak
+      meterDisplay.outputReadout = meterDisplay.outputPeak
+      meterDisplay.diagnostics =
+        "Underruns: \(stats.signal.underruns)  Overruns: \(stats.signal.overruns)  Clipped: \(stats.signal.clipped_samples)"
+      lastReadoutTime = now
+    }
     if stats.error != noErr {
       failed = true
       status = "Audio stopped after an error (\(stats.error)). Disable and enable to retry."
@@ -287,15 +305,37 @@ private func devices() -> [AudioDevice] {
 struct Meter: View {
   let title: String
   let peak: Float
+  let readout: Float
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       HStack {
         Text(title)
         Spacer()
-        Text(peak > 0 ? String(format: "%.1f dBFS", 20 * log10(peak)) : "−∞ dBFS").monospacedDigit()
+        Text(readout > 0 ? String(format: "%.1f dBFS", 20 * log10(readout)) : "−∞ dBFS").monospacedDigit()
       }
-      ProgressView(value: max(0, min(1, (Double(20 * log10(max(peak, 0.000001))) + 60) / 60)))
-        .tint(peak >= 0.99 ? .red : .blue)
+      ZStack(alignment: .leading) {
+        Rectangle().fill(.secondary.opacity(0.2))
+        Rectangle().fill(peak >= 0.99 ? Color.red : Color.primary)
+          .scaleEffect(
+            x: max(0, min(1, (Double(20 * log10(max(peak, 0.000001))) + 60) / 60)),
+            y: 1, anchor: .leading)
+          // Interpolate for one display interval, not a long attack animation.
+          .animation(.linear(duration: 1.0 / 60.0), value: peak)
+      }
+      .frame(height: 6)
+      .clipShape(Capsule())
+      .accessibilityHidden(true) // The adjacent text exposes the same level.
+    }
+  }
+}
+
+struct MeterPanel: View {
+  @ObservedObject var display: MeterDisplay
+  var body: some View {
+    VStack(spacing: 22) {
+      Meter(title: "Input", peak: display.inputPeak, readout: display.inputReadout)
+      Meter(title: "Output", peak: display.outputPeak, readout: display.outputReadout)
+      Text(display.diagnostics).font(.caption).foregroundStyle(.secondary)
     }
   }
 }
@@ -345,9 +385,7 @@ struct ContentView: View {
               model.save()
             }))
       }.disabled(model.settingsError != nil)
-      Meter(title: "Input", peak: model.inputPeak)
-      Meter(title: "Output", peak: model.outputPeak)
-      Text(model.diagnostics).font(.caption).foregroundStyle(.secondary)
+      MeterPanel(display: model.meterDisplay)
       Text(
         "Choose OpenBlue as the input in your recording or meeting app. Keep OpenBlue running. Audio stays on this Mac."
       )
