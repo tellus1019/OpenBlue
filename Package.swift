@@ -11,8 +11,10 @@ let package = Package(
       linkerSettings: [.linkedFramework("CoreAudio"), .linkedFramework("AudioToolbox"), .linkedFramework("Accelerate")]),
     .target(name: "Settings", dependencies: ["AudioCore"]),
     .target(name: "AudioClients"),
-    .executableTarget(name: "OpenBlue", dependencies: ["AudioCore", "Settings", "AudioClients"]),
+    .target(name: "AudioLifecycle"),
+    .executableTarget(name: "OpenBlue", dependencies: ["AudioCore", "Settings", "AudioClients", "AudioLifecycle"]),
     .testTarget(name: "AudioClientsTests", dependencies: ["AudioClients"]),
+    .testTarget(name: "AudioLifecycleTests", dependencies: ["AudioLifecycle"]),
     .testTarget(name: "SettingsTests", dependencies: ["Settings"]),
   ]
 )

@@ -1,7 +1,8 @@
 import AVFoundation
 import AppKit
-import AudioCore
 import AudioClients
+import AudioCore
+import AudioLifecycle
 import CoreAudio
 import Darwin
 import OSLog
@@ -64,6 +65,13 @@ private func devices() -> [AudioDevice] {
     return AudioDevice(id: id, uid: uid, name: name, hasInput: hasInput)
   }
 }
+private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
+  var a = address(kAudioDevicePropertyNominalSampleRate)
+  var size = UInt32(MemoryLayout<Double>.size)
+  var rate = Double(0)
+  guard AudioObjectGetPropertyData(device, &a, 0, nil, &size, &rate) == noErr else { return nil }
+  return rate
+}
 
 @MainActor final class MeterLevels: ObservableObject {
   private(set) var reductions = Array(repeating: Float(0), count: 9)
@@ -99,8 +107,11 @@ private func devices() -> [AudioDevice] {
   private var engineOutput: AudioDeviceID = 0
   private var observedInput: AudioDeviceID = 0
   private var deviceListener: AudioObjectPropertyListenerBlock?
+  private var serviceListener: AudioObjectPropertyListenerBlock?
   private let inputClients = InputClients()
   private var formatListener: AudioObjectPropertyListenerBlock?
+  private var retryTask: Task<Void, Never>?
+  private var recovery = RecoveryBackoff()
   private var timer: Timer?
   private var lastReadoutTime: TimeInterval = 0
   private let nanosecondsPerTick: Double = {
@@ -110,6 +121,9 @@ private func devices() -> [AudioDevice] {
   }()
   private var awake = true
   private var failed = false
+  private var knownYetiUIDs: Set<String> = []
+  private var driverAvailable = false
+  private var consumerCount = 0
   private let store: SettingsStore
   private let audioLog = Logger(subsystem: "org.openblue.app", category: "AudioLifecycle")
 
@@ -120,7 +134,7 @@ private func devices() -> [AudioDevice] {
         in: .userDomainMask)[0].appendingPathComponent("OpenBlue/settings.json"))
     do { settings = try store.load() } catch { settingsError = error.localizedDescription }
     let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-      Task { @MainActor [weak self] in self?.refresh() }
+      Task { @MainActor [weak self] in self?.topologyChanged() }
     }
     deviceListener = listener
     var a = address(kAudioHardwarePropertyDevices)
@@ -128,6 +142,17 @@ private func devices() -> [AudioDevice] {
       AudioObjectID(kAudioObjectSystemObject), &a, .main, listener)
     if result != noErr {
       status = "Device observation failed (\(result))"
+      failed = true
+    }
+    let restarted: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+      Task { @MainActor [weak self] in self?.audioServiceRestarted() }
+    }
+    serviceListener = restarted
+    var service = address(kAudioHardwarePropertyServiceRestarted)
+    let serviceResult = AudioObjectAddPropertyListenerBlock(
+      AudioObjectID(kAudioObjectSystemObject), &service, .main, restarted)
+    if serviceResult != noErr {
+      status = "Audio service observation failed (\(serviceResult))"
       failed = true
     }
     NSWorkspace.shared.notificationCenter.addObserver(
@@ -139,17 +164,67 @@ private func devices() -> [AudioDevice] {
     }
     RunLoop.main.add(meterTimer, forMode: .common)
     timer = meterTimer
-    inputClients.start { [weak self] in self?.refresh() }
+    inputClients.start { [weak self] in self?.inputClientsChanged() }
     refresh()
+  }
+  private func cancelRetry(reset: Bool) {
+    retryTask?.cancel()
+    retryTask = nil
+    if reset { recovery.reset() }
+  }
+  private func topologyChanged() {
+    cancelRetry(reset: true)
+    failed = false
+    refresh()
+  }
+  private func inputClientsChanged() {
+    cancelRetry(reset: false)
+    refresh()
+  }
+  private func removeFormatListener() {
+    if let formatListener, observedInput != 0 {
+      var a = address(kAudioDevicePropertyNominalSampleRate)
+      AudioObjectRemovePropertyListenerBlock(observedInput, &a, .main, formatListener)
+    }
+    observedInput = 0
+    formatListener = nil
+  }
+  private func audioServiceRestarted() {
+    audioLog.notice("Core Audio service restarted; rebuilding device and client observation")
+    cancelRetry(reset: true)
+    stopAudio()
+    removeFormatListener()
+    inputClients.stop()
+    inputClients.start { [weak self] in self?.inputClientsChanged() }
+    failed = false
+    status = "Audio service restarted · Recovering"
+    refresh()
+  }
+  private func scheduleRecovery(_ operation: String, error: OSStatus) {
+    stopAudio()
+    guard enabled, awake, settingsError == nil else { return }
+    let delay = recovery.nextDelay()
+    let attempt = recovery.attempt
+    status = String(format: "%@ failed (%d) · Retrying in %.1f seconds", operation, error, delay)
+    audioLog.error("\(operation, privacy: .public) failed status=\(error) retry=\(attempt) delay=\(delay, format: .fixed(precision: 1))s")
+    retryTask = Task { [weak self] in
+      try? await Task.sleep(for: .seconds(delay))
+      guard !Task.isCancelled, let self else { return }
+      self.retryTask = nil
+      self.refresh()
+    }
   }
   @objc private func sleep() {
     awake = false
+    cancelRetry(reset: true)
     stopAudio()
     status = "Paused for sleep"
   }
   @objc private func wake() {
     awake = true
     failed = false
+    cancelRetry(reset: true)
+    audioLog.notice("Mac woke; rebuilding the audio path if it is still requested")
     refresh()
   }
   func save() {
@@ -240,6 +315,7 @@ private func devices() -> [AudioDevice] {
     enabled = value
     failed = false
     guard value else {
+      cancelRetry(reset: true)
       stopAudio()
       status = "Stopped"
       return
@@ -272,11 +348,21 @@ private func devices() -> [AudioDevice] {
     let all = devices()
     availableYetis = all.filter(\.isYeti)
     let output = all.first { $0.uid == virtualUID }
+    let nextYetiUIDs = Set(availableYetis.map(\.uid))
+    if nextYetiUIDs != knownYetiUIDs {
+      audioLog.notice("Yeti device set changed: count=\(nextYetiUIDs.count)")
+      knownYetiUIDs = nextYetiUIDs
+    }
+    if (output != nil) != driverAvailable {
+      driverAvailable = output != nil
+      audioLog.notice("Virtual microphone availability changed: available=\(self.driverAvailable)")
+    }
     guard awake, !failed else {
       stopAudio()
       return
     }
     guard enabled else {
+      cancelRetry(reset: true)
       stopAudio()
       status = output == nil ? "Driver is not installed" : "Stopped"
       return
@@ -286,6 +372,7 @@ private func devices() -> [AudioDevice] {
       return
     }
     guard let output else {
+      cancelRetry(reset: true)
       stopAudio()
       status = "Driver is not installed"
       return
@@ -300,31 +387,32 @@ private func devices() -> [AudioDevice] {
       return
     }
     guard let input = availableYetis.first(where: { $0.uid == settings.deviceUID }) else {
+      cancelRetry(reset: true)
       stopAudio()
       status = "Connect the original Yeti using the standard USB audio driver"
       return
     }
     if observedInput != input.id {
-      if let formatListener, observedInput != 0 {
-        var a = address(kAudioDevicePropertyNominalSampleRate)
-        AudioObjectRemovePropertyListenerBlock(observedInput, &a, .main, formatListener)
-      }
+      removeFormatListener()
       let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
         Task { @MainActor [weak self] in
-          self?.stopAudio()
-          self?.refresh()
+          self?.topologyChanged()
         }
       }
       var a = address(kAudioDevicePropertyNominalSampleRate)
       let code = AudioObjectAddPropertyListenerBlock(input.id, &a, .main, listener)
       guard code == noErr else {
-        stopAudio()
-        failed = true
-        status = "Yeti format observation failed (\(code))"
+        scheduleRecovery("Yeti format observation", error: code)
         return
       }
       observedInput = input.id
       formatListener = listener
+    }
+    guard nominalSampleRate(input.id) == 48_000 else {
+      cancelRetry(reset: true)
+      stopAudio()
+      status = "Set the selected Yeti to 48 kHz in Audio MIDI Setup"
+      return
     }
     guard inputClients.error == noErr else {
       stopAudio()
@@ -333,17 +421,22 @@ private func devices() -> [AudioDevice] {
     }
     let count = InputProcess.consumers(
       in: inputClients.processes, device: output.id, excluding: getpid()).count
+    if count != consumerCount {
+      consumerCount = count
+      audioLog.notice("Virtual microphone input users changed: processes=\(count)")
+    }
     guard count > 0 else {
+      cancelRetry(reset: true)
       stopAudio()
       status = "Ready · Select OpenBlue as the microphone in another app"
       return
     }
     if engineInput != input.id || engineOutput != output.id { stopAudio() }
+    guard retryTask == nil else { return }
     if engine == nil {
       var error: OSStatus = 0
       guard let newEngine = ob_engine_create(input.id, output.id, &error) else {
-        failed = true
-        status = "Audio setup failed (\(error)). Both devices must use 48 kHz stereo."
+        scheduleRecovery("Audio setup", error: error)
         return
       }
       let applied = settings.dspValues.withUnsafeBufferPointer {
@@ -358,13 +451,13 @@ private func devices() -> [AudioDevice] {
       let start = ob_engine_start(newEngine)
       guard start == noErr else {
         ob_engine_destroy(newEngine)
-        failed = true
-        status = "Audio start failed (\(start))"
+        scheduleRecovery("Audio start", error: start)
         return
       }
       engine = newEngine
       engineInput = input.id
       engineOutput = output.id
+      recovery.reset()
       audioLog.info("Audio started: input=\(input.id) output=\(output.id) consumers=\(count) dspDelayFrames=\(OB_DSP_LATENCY)")
     }
     status = "Processing · \(count) external input process(es)"
@@ -409,9 +502,7 @@ private func devices() -> [AudioDevice] {
       lastReadoutTime = now
     }
     if stats.error != noErr {
-      failed = true
-      status = "Audio stopped after an error (\(stats.error)). Disable and enable to retry."
-      stopAudio()
+      scheduleRecovery("Audio processing", error: stats.error)
     }
   }
 }
