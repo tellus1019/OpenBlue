@@ -49,7 +49,8 @@ typedef struct { double b0, b1, b2, a1, a2; } Coeff;
 typedef struct { Coeff c; double x1[2], x2[2], y1[2], y2[2]; } Filter;
 typedef struct {
   float v[OBP_COUNT];
-  Coeff filters[6]; // HPF, three EQ bands, de-esser HPF, de-popper LPF.
+  // HPF, three EQ bands, two detection filters, two complementary split LPFs.
+  Coeff filters[8];
   float gain_in, gain_out, makeup, nr_power, nr_min, nr_release;
   float gate_attack, gate_release, gate_open, gate_close;
   float esser_attack, esser_release, popper_attack, popper_release;
@@ -63,7 +64,7 @@ struct OBDSP {
   unsigned back, front;
   _Atomic unsigned middle;
   FFTSetup fft;
-  Filter filters[6];
+  Filter filters[8];
   float gain_in, gain_out, makeup, mix[OB_DSP_GROUPS], bypass;
   float input[2][FFT_N], overlap[2][FFT_N * 2], window[FFT_N];
   float real[2][FFT_N], imag[2][FFT_N], spectral_gain[FFT_N / 2 + 1];
@@ -111,6 +112,10 @@ static Coeff coefficients(float hz, float q, float db, int type) {
   c.b0 /= a0; c.b1 /= a0; c.b2 /= a0; c.a1 /= a0; c.a2 /= a0;
   return c;
 }
+static Coeff first_order_lowpass(float hz) {
+  double k = tan(M_PI * hz / RATE);
+  return (Coeff){k / (1 + k), k / (1 + k), 0, (k - 1) / (k + 1), 0};
+}
 static Prepared prepare(const float *v) {
   Prepared p = {0};
   memcpy(p.v, v, sizeof(p.v));
@@ -120,6 +125,8 @@ static Prepared prepare(const float *v) {
                                    v[OBP_EQ1_DB+i*3], 2);
   p.filters[4] = coefficients(v[OBP_ESSER_HZ], M_SQRT1_2, 0, 0);
   p.filters[5] = coefficients(v[OBP_POPPER_HZ], M_SQRT1_2, 0, 1);
+  p.filters[6] = first_order_lowpass(v[OBP_ESSER_HZ]);
+  p.filters[7] = first_order_lowpass(v[OBP_POPPER_HZ]);
   p.gain_in = amplitude(v[OBP_INPUT_GAIN]);
   p.gain_out = amplitude(v[OBP_OUTPUT_GAIN]);
   p.makeup = amplitude(v[OBP_COMP_MAKEUP]);
@@ -168,7 +175,7 @@ void ob_dsp_destroy(OBDSP *s) {
 void ob_dsp_discontinuity(OBDSP *s) {
   Prepared *p = &s->slots[s->front];
   memset(s->filters, 0, sizeof(s->filters));
-  for (unsigned i = 0; i < 6; ++i) s->filters[i].c = p->filters[i];
+  for (unsigned i = 0; i < 8; ++i) s->filters[i].c = p->filters[i];
   memset(s->input, 0, sizeof(s->input));
   memset(s->overlap, 0, sizeof(s->overlap));
   memset(s->nr_dry, 0, sizeof(s->nr_dry));
@@ -293,7 +300,7 @@ void ob_dsp_process(OBDSP *s, float *out, uint32_t n) {
     s->bypass = blend(s->bypass, v[OBP_BYPASS]);
     for (unsigned g = 1; g < OB_DSP_GROUPS; ++g)
       s->mix[g] = blend(s->mix[g], v[enable[g]]);
-    for (unsigned f = 0; f < 6; ++f) smooth_coeff(&s->filters[f], p->filters[f]);
+    for (unsigned f = 0; f < 8; ++f) smooth_coeff(&s->filters[f], p->filters[f]);
     PROFILE_STAGE(0);
     for (unsigned ch = 0; ch < 2; ++ch) {
       x[ch] *= s->gain_in;
@@ -341,8 +348,11 @@ void ob_dsp_process(OBDSP *s, float *out, uint32_t n) {
           v[OBP_ESSER_THRESHOLD], v[OBP_ESSER_RANGE], p->esser_attack, p->esser_release);
       else gain = band_reduction(bp, &s->popper_detector, &s->popper_db,
           v[OBP_POPPER_THRESHOLD], v[OBP_POPPER_RANGE], p->popper_attack, p->popper_release);
-      for (unsigned ch = 0; ch < 2; ++ch)
-        x[ch] += band[ch]*(gain-1)*s->mix[5+stage];
+      for (unsigned ch = 0; ch < 2; ++ch) {
+        float low = filter(&s->filters[6+stage], x[ch], ch);
+        float target = stage ? low : x[ch] - low;
+        x[ch] += target*(gain-1)*s->mix[5+stage];
+      }
       reduction[5+stage] = fmaxf(reduction[5+stage],
                                 (stage ? s->popper_db : s->esser_db)*s->mix[5+stage]);
       PROFILE_STAGE(5+stage);
