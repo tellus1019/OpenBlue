@@ -1,6 +1,7 @@
 import AVFoundation
 import AppKit
 import AudioCore
+import AudioClients
 import CoreAudio
 import Settings
 import SwiftUI
@@ -74,10 +75,9 @@ private func devices() -> [AudioDevice] {
   private var engine: OpaquePointer?
   private var engineInput: AudioDeviceID = 0
   private var engineOutput: AudioDeviceID = 0
-  private var observedOutput: AudioDeviceID = 0
   private var observedInput: AudioDeviceID = 0
   private var deviceListener: AudioObjectPropertyListenerBlock?
-  private var consumerListener: AudioObjectPropertyListenerBlock?
+  private let inputClients = InputClients()
   private var formatListener: AudioObjectPropertyListenerBlock?
   private var timer: Timer?
   private var awake = true
@@ -108,6 +108,7 @@ private func devices() -> [AudioDevice] {
     timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
       Task { @MainActor [weak self] in self?.meters() }
     }
+    inputClients.start { [weak self] in self?.refresh() }
     refresh()
   }
   @objc private func sleep() {
@@ -172,25 +173,6 @@ private func devices() -> [AudioDevice] {
     let all = devices()
     availableYetis = all.filter(\.isYeti)
     let output = all.first { $0.uid == virtualUID }
-    if observedOutput != (output?.id ?? 0) {
-      if let consumerListener, observedOutput != 0 {
-        var a = address(consumerSelector)
-        AudioObjectRemovePropertyListenerBlock(observedOutput, &a, .main, consumerListener)
-      }
-      observedOutput = output?.id ?? 0
-      if observedOutput != 0 {
-        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-          Task { @MainActor [weak self] in self?.refresh() }
-        }
-        consumerListener = listener
-        var a = address(consumerSelector)
-        let code = AudioObjectAddPropertyListenerBlock(observedOutput, &a, .main, listener)
-        if code != noErr {
-          failed = true
-          status = "Driver observation failed (\(code))"
-        }
-      }
-    }
     guard awake, !failed else {
       stopAudio()
       return
@@ -245,11 +227,13 @@ private func devices() -> [AudioDevice] {
       observedInput = input.id
       formatListener = listener
     }
-    guard let text = stringProperty(output.id, consumerSelector), let count = UInt32(text) else {
+    guard inputClients.error == noErr else {
       stopAudio()
-      status = "Driver client status is unavailable"
+      status = "Input client observation failed (\(inputClients.error))"
       return
     }
+    let count = InputProcess.consumers(
+      in: inputClients.processes, device: output.id, excluding: getpid()).count
     guard count > 0 else {
       stopAudio()
       status = "Ready · Select OpenBlue as the microphone in another app"
@@ -275,7 +259,7 @@ private func devices() -> [AudioDevice] {
       engineInput = input.id
       engineOutput = output.id
     }
-    status = "Processing · \(count) external audio client(s)"
+    status = "Processing · \(count) external input process(es)"
   }
   func stopAudio() {
     if let engine { ob_engine_destroy(engine) }
@@ -380,12 +364,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   @StateObject private var model = AudioModel()
   init() {
     if CommandLine.arguments.contains("--inspect") {
-      let rows = devices().map {
+      let processes = try? InputClients.snapshot()
+      let rows = devices().map { device in
         [
-          "id": String($0.id), "name": $0.name, "uid": $0.uid,
-          "standardYeti": String($0.isYeti),
-          "consumers": $0.uid == virtualUID
-            ? (stringProperty($0.id, consumerSelector) ?? "unavailable") : "",
+          "id": String(device.id), "name": device.name, "uid": device.uid,
+          "standardYeti": String(device.isYeti),
+          "driverIOCount": device.uid == virtualUID
+            ? (stringProperty(device.id, consumerSelector) ?? "unavailable") : "",
+          "inputProcesses": device.uid == virtualUID
+            ? (processes.map { processes in String(InputProcess.consumers(
+              in: processes, device: device.id, excluding: getpid()).count) } ?? "unavailable") : "",
         ]
       }
       if let data = try? JSONSerialization.data(
