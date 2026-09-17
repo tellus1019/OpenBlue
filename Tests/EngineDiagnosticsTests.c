@@ -33,12 +33,19 @@ int main(void) {
   stats = ob_engine_stats(&engine);
   assert(stats.captured_frames == 2048 && stats.render_frames == 512 &&
          stats.signal.output_frames == 256);
+  // DSP has a declared fixed delay; callback progress precedes audible output.
+  assert(output[0] == 0);
+  for (unsigned i = 0; i < 8; ++i) {
+    assert(capture(&engine, &flags, &time, 1, 256, NULL) == noErr);
+    assert(render(&engine, &flags, &time, 0, 256, &buffers) == noErr);
+  }
   assert(fabsf(output[0] - 0.25f) < 0.0001f);
+  uint64_t before_failure = ob_engine_stats(&engine).captured_frames;
   // Failed acquisition must not advance the successful-capture counter.
   simulated_status = kAudioHardwareBadDeviceError;
   assert(capture(&engine, &flags, &time, 1, 256, NULL) == noErr);
   stats = ob_engine_stats(&engine);
-  assert(stats.captured_frames == 2048 && stats.error == simulated_status);
+  assert(stats.captured_frames == before_failure && stats.error == simulated_status);
   ob_signal_destroy(engine.signal);
   puts("PASS capture, DSP and render progress diagnostics; no device opened");
   return 0;

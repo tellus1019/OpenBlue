@@ -15,6 +15,7 @@ There are no external package dependencies.
 bash Scripts/build.sh debug
 bash Scripts/build.sh release
 bash Scripts/test.sh
+bash Scripts/benchmark.sh
 ```
 
 Build products are written to `.build/products/debug/` and `.build/products/release/`:
@@ -40,8 +41,9 @@ OpenBlue uses the original Yeti through the standard macOS USB audio route.
 2. Set the Yeti format to 48 kHz stereo in Audio MIDI Setup when required.
 3. Launch OpenBlue and enable processing.
 4. Select OpenBlue as the microphone input in another application.
-5. Adjust gain from -24 to +12 dB or enable bypass.
-6. Keep OpenBlue running while the virtual microphone is in use.
+5. Adjust input and output gain from -24 to +12 dB. Expand a processor to adjust its parameters and use its switch to enable it. All new processors start disabled. See [Processing controls](Documentation/Processing.md).
+6. Use **Bypass all processing** to compare with the unprocessed signal. The chain adds 608 frames, or 12.67 ms at 48 kHz, including when bypassed. Bypass retains clock alignment, fixed delay, and final full-scale clipping.
+7. Keep OpenBlue running while the virtual microphone is in use.
 
 Capture starts when OpenBlue is enabled and an external process uses the virtual microphone input.
 OpenBlue excludes its own process when counting input users.
@@ -52,9 +54,12 @@ Their display-only peak envelope uses immediate attack and a 200 dB per second r
 Numeric readouts update five times per second.
 Meter smoothing does not alter the audio signal.
 
-Gain, bypass, and the selected Yeti UID are saved atomically in `~/Library/Application Support/OpenBlue/settings.json`.
+All processing parameters, gain, bypass, and the selected Yeti UID are saved atomically in `~/Library/Application Support/OpenBlue/settings.json`.
 The enable state is not persisted, so each launch starts disabled.
 Invalid or newer settings produce a visible error and are not overwritten with defaults.
+Schema 1 is migrated explicitly to schema 2 without changing existing gain, bypass, or device selection.
+New processors start disabled with output gain at 0 dB.
+On the first save, the original schema 1 bytes are backed up to `settings.json.schema1-backup` before the schema 2 document is written.
 
 ## API references
 

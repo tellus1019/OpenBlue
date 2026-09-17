@@ -178,6 +178,9 @@ void ob_engine_destroy(OBEngine *e) {
 void ob_engine_gain(OBEngine *e, float db, bool bypass) {
   ob_signal_gain(e->signal, db, bypass);
 }
+bool ob_engine_parameters(OBEngine *e, const float *v, uint32_t n) {
+  return ob_signal_parameters(e->signal, v, n);
+}
 OBEngineStats ob_engine_stats(OBEngine *e) {
   return (OBEngineStats){ob_signal_stats(e->signal), atomic_load(&e->error),
                          atomic_load(&e->callback_max_ticks),
