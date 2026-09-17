@@ -3,6 +3,7 @@ import AppKit
 import AudioCore
 import AudioClients
 import CoreAudio
+import OSLog
 import Settings
 import SwiftUI
 
@@ -90,6 +91,7 @@ private func devices() -> [AudioDevice] {
   private var awake = true
   private var failed = false
   private let store: SettingsStore
+  private let audioLog = Logger(subsystem: "org.openblue.app", category: "AudioLifecycle")
 
   init() {
     store = SettingsStore(
@@ -267,11 +269,16 @@ private func devices() -> [AudioDevice] {
       engine = newEngine
       engineInput = input.id
       engineOutput = output.id
+      audioLog.info("Audio started: input=\(input.id) output=\(output.id) consumers=\(count)")
     }
     status = "Processing · \(count) external input process(es)"
   }
   func stopAudio() {
-    if let engine { ob_engine_destroy(engine) }
+    if let engine {
+      let stats = ob_engine_stats(engine)
+      audioLog.info("Audio stopping: capture=\(stats.captured_frames) dsp=\(stats.signal.output_frames) render=\(stats.render_frames) error=\(stats.error) underruns=\(stats.signal.underruns) overruns=\(stats.signal.overruns)")
+      ob_engine_destroy(engine)
+    }
     engine = nil
     engineInput = 0
     engineOutput = 0
@@ -291,7 +298,7 @@ private func devices() -> [AudioDevice] {
       meterDisplay.inputReadout = meterDisplay.inputPeak
       meterDisplay.outputReadout = meterDisplay.outputPeak
       meterDisplay.diagnostics =
-        "Underruns: \(stats.signal.underruns)  Overruns: \(stats.signal.overruns)  Clipped: \(stats.signal.clipped_samples)"
+        "Underruns: \(stats.signal.underruns)  Overruns: \(stats.signal.overruns)  Clipped: \(stats.signal.clipped_samples)\nFrames: capture \(stats.captured_frames) → DSP \(stats.signal.output_frames) → render \(stats.render_frames)"
       lastReadoutTime = now
     }
     if stats.error != noErr {

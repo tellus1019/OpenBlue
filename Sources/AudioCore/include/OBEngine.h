@@ -7,6 +7,8 @@ typedef struct {
   OBSignalStats signal;
   OSStatus error;
   uint64_t callback_max_ticks;
+  uint64_t captured_frames;
+  uint64_t render_frames;
 } OBEngineStats;
 // Control functions are serialized by the app. Callbacks only access audio
 // state.
