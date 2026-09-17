@@ -93,6 +93,7 @@ private func devices() -> [AudioDevice] {
   let meterDisplay = MeterDisplay()
   @Published var availableYetis: [AudioDevice] = []
   @Published var settingsError: String?
+  @Published var presetMessage: String?
   private var engine: OpaquePointer?
   private var engineInput: AudioDeviceID = 0
   private var engineOutput: AudioDeviceID = 0
@@ -160,6 +161,9 @@ private func devices() -> [AudioDevice] {
       enabled = false
       stopAudio()
     }
+    applyProcessing()
+  }
+  private func applyProcessing() {
     if let engine {
       let applied = settings.dspValues.withUnsafeBufferPointer {
         ob_engine_parameters(engine, $0.baseAddress, UInt32($0.count))
@@ -170,6 +174,62 @@ private func devices() -> [AudioDevice] {
         stopAudio()
       }
     }
+  }
+  func changePreset(_ change: (inout AudioSettings) throws -> Void) -> Bool {
+    guard settingsError == nil else { return false }
+    var candidate = settings
+    do { try change(&candidate) } catch {
+      presetMessage = error.localizedDescription
+      return false
+    }
+    do {
+      try store.save(candidate)
+      settings = candidate
+      applyProcessing()
+      return settingsError == nil
+    } catch {
+      settingsError = error.localizedDescription
+      enabled = false
+      stopAudio()
+      return false
+    }
+  }
+  func showSettingsFolder() {
+    NSWorkspace.shared.selectFile(store.url.path, inFileViewerRootedAtPath: store.url.deletingLastPathComponent().path)
+  }
+  func exportPresets() {
+    let panel = NSSavePanel()
+    panel.nameFieldStringValue = "OpenBlue-presets.json"
+    panel.title = "Back Up Presets"
+    guard panel.runModal() == .OK, let destination = panel.url else { return }
+    do {
+      try store.exportBackup(settings, to: destination)
+      presetMessage = "Preset backup saved."
+    } catch { presetMessage = error.localizedDescription }
+  }
+  func restorePresets() {
+    let panel = NSOpenPanel()
+    panel.title = "Restore Preset Backup"
+    panel.canChooseDirectories = false
+    panel.allowsMultipleSelection = false
+    guard panel.runModal() == .OK, let source = panel.url else { return }
+    do {
+      let candidate = try store.readBackup(from: source)
+      let confirmation = NSAlert()
+      confirmation.messageText = "Restore \(candidate.presets.count) preset(s)?"
+      confirmation.informativeText = "This replaces the current preset library and selection. The current settings file will be preserved in the settings folder. Audio will be disabled; enable it again when ready."
+      confirmation.addButton(withTitle: "Restore")
+      confirmation.addButton(withTitle: "Cancel")
+      guard confirmation.runModal() == .alertFirstButtonReturn else { return }
+      let preserved = try store.restore(candidate)
+      enabled = false
+      stopAudio()
+      settings = candidate
+      settingsError = nil
+      refresh()
+      presetMessage = preserved.map { "Presets restored. Previous settings preserved at \($0.path)." }
+        ?? "Presets restored."
+    } catch { presetMessage = error.localizedDescription }
   }
   func select(_ uid: String) {
     settings.deviceUID = uid
@@ -449,7 +509,12 @@ struct ContentView: View {
           Text("YETI").foregroundStyle(.secondary)
         }
         Text(model.status).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        if let error = model.settingsError { Text(error).foregroundStyle(.red) }
+        if let error = model.settingsError {
+          Text(error).foregroundStyle(.red)
+          Text("The original file is preserved. Restore a known-good backup, or open the settings folder to keep a copy and recover the file. Use a compatible OpenBlue version for newer settings.")
+            .font(.caption).foregroundStyle(.secondary)
+        }
+        PresetControls(model: model)
         if model.availableYetis.count > 1 {
           Picker(
             "Yeti",
