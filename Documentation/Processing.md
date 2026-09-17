@@ -118,11 +118,13 @@ A switch uses 0 for disabled and 1 for enabled.
 
 ## Storage
 
-Settings use schema 2 and are saved atomically to a single settings document.
-Schema-1 migration preserves the original gain, bypass, and Yeti UID and backs
-up the exact source document before its first replacement. Incomplete,
-out-of-range, malformed, or unknown-version settings produce an error without
-overwriting the source. Launch always starts capture disabled.
+Settings use schema 3 to store named presets, the selected preset, and the
+shared Yeti UID atomically. Schema 1 and schema 2 migrate without losing their
+processing values or device selection; the original document is backed up
+before its first replacement. Invalid or unsupported documents are preserved.
+Backup exports the complete library. Restore validates the replacement and
+preserves the previous document before replacing it. Launch starts capture
+disabled.
 
 ## Implementation references
 
