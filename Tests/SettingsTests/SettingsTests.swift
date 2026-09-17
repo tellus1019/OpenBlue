@@ -43,7 +43,7 @@ extension SettingsTests {
     let old = Data(#"{"schemaVersion":1,"gainDB":-8.5,"bypass":true,"deviceUID":"legacy-yeti"}"#.utf8)
     try old.write(to: store.url)
     let migrated = try store.load()
-    XCTAssertEqual(migrated.schemaVersion, 2)
+    XCTAssertEqual(migrated.schemaVersion, 3)
     XCTAssertEqual(migrated.gainDB, -8.5)
     XCTAssertTrue(migrated.bypass)
     XCTAssertEqual(migrated.deviceUID, "legacy-yeti")
