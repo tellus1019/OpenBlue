@@ -46,7 +46,11 @@ bool ob_parameters_valid(const float *v, uint32_t n) {
   return true;
 }
 typedef struct { double b0, b1, b2, a1, a2; } Coeff;
-typedef struct { Coeff c; double x1[2], x2[2], y1[2], y2[2]; } Filter;
+typedef struct {
+  Coeff c;
+  double x1[2], x2[2], y1[2], y2[2];
+  bool smoothing;
+} Filter;
 typedef struct {
   float v[OBP_COUNT];
   // HPF, three EQ bands, two detection filters, two complementary split LPFs.
@@ -55,6 +59,8 @@ typedef struct {
   float gate_attack, gate_release, gate_open, gate_close;
   float esser_attack, esser_release, popper_attack, popper_release;
   float comp_attack, comp_release, ceiling, limit_release;
+  float comp_slope;
+  unsigned gate_hold;
 } Prepared;
 struct OBDSP {
 #ifdef OB_DSP_PROFILE
@@ -69,7 +75,7 @@ struct OBDSP {
   float input[2][FFT_N], overlap[2][FFT_N * 2], window[FFT_N];
   float real[2][FFT_N], imag[2][FFT_N], spectral_gain[FFT_N / 2 + 1];
   float spectral_target[FFT_N / 2 + 1];
-  float nr_dry[2][FFT_N], dry[2][OB_DSP_LATENCY];
+  float dry[2][OB_DSP_LATENCY];
   uint64_t clock;
   float gate_detector, gate_db, comp_detector, comp_db;
   float esser_detector, esser_db, popper_detector, popper_db;
@@ -138,12 +144,14 @@ static Prepared prepare(const float *v) {
   p.gate_release = response(v[OBP_GATE_RELEASE]);
   p.gate_open = amplitude(v[OBP_GATE_THRESHOLD]);
   p.gate_close = amplitude(v[OBP_GATE_THRESHOLD]-3);
+  p.gate_hold = (unsigned)(v[OBP_GATE_HOLD]*48);
   p.esser_attack = response(v[OBP_ESSER_ATTACK]);
   p.esser_release = response(v[OBP_ESSER_RELEASE]);
   p.popper_attack = response(v[OBP_POPPER_ATTACK]);
   p.popper_release = response(v[OBP_POPPER_RELEASE]);
   p.comp_attack = response(v[OBP_COMP_ATTACK]);
   p.comp_release = response(v[OBP_COMP_RELEASE]);
+  p.comp_slope = 1-1/v[OBP_COMP_RATIO];
   p.ceiling = amplitude(v[OBP_LIMIT_CEILING]);
   p.limit_release = response(v[OBP_LIMIT_RELEASE]);
   return p;
@@ -178,7 +186,6 @@ void ob_dsp_discontinuity(OBDSP *s) {
   for (unsigned i = 0; i < 8; ++i) s->filters[i].c = p->filters[i];
   memset(s->input, 0, sizeof(s->input));
   memset(s->overlap, 0, sizeof(s->overlap));
-  memset(s->nr_dry, 0, sizeof(s->nr_dry));
   memset(s->dry, 0, sizeof(s->dry));
   memset(s->limit_samples, 0, sizeof(s->limit_samples));
   memset(s->mix, 0, sizeof(s->mix));
@@ -211,9 +218,15 @@ bool ob_dsp_update(OBDSP *s, const float *v, uint32_t n) {
   return true;
 }
 static void smooth_coeff(Filter *f, Coeff target) {
+  if (!f->smoothing) return;
+  Coeff previous = f->c;
 #define MOVE(field) f->c.field += (target.field - f->c.field) * COEFF_BLEND
   MOVE(b0); MOVE(b1); MOVE(b2); MOVE(a1); MOVE(a2);
 #undef MOVE
+  // Stop only when the same arithmetic no longer changes any coefficient.
+  f->smoothing = f->c.b0 != previous.b0 || f->c.b1 != previous.b1 ||
+                 f->c.b2 != previous.b2 || f->c.a1 != previous.a1 ||
+                 f->c.a2 != previous.a2;
 }
 static float filter(Filter *f, float x, unsigned ch) {
   Coeff c = f->c;
@@ -266,21 +279,25 @@ static float detector(float previous, float peak) {
   return fmaxf(peak, previous * 0.9989588757f);
 }
 static float band_reduction(float peak, float *envelope, float *reduction,
-                            float threshold, float range, float attack, float release) {
+                            float threshold, float range, float attack, float release,
+                            bool audible) {
   *envelope = detector(*envelope, peak);
   float target = fminf(range, fmaxf(0, dbfs(*envelope)-threshold));
   *reduction = approach(*reduction, target, target > *reduction ? attack : release);
-  return amplitude(-*reduction);
+  return audible ? amplitude(-*reduction) : 1;
 }
 void ob_dsp_process(OBDSP *s, float *out, uint32_t n) {
-  if (atomic_load_explicit(&s->middle, memory_order_acquire) & DIRTY)
+  if (atomic_load_explicit(&s->middle, memory_order_acquire) & DIRTY) {
     s->front = atomic_exchange_explicit(&s->middle, s->front,
                                         memory_order_acq_rel) & 3;
+    for (unsigned f = 0; f < 8; ++f) s->filters[f].smoothing = true;
+  }
   const Prepared *p = &s->slots[s->front];
   const float *v = p->v;
   const unsigned enable[] = {0, OBP_HPF_ON, OBP_NR_ON, OBP_GATE_ON, OBP_EQ_ON,
                              OBP_ESSER_ON, OBP_POPPER_ON, OBP_COMP_ON, OBP_LIMIT_ON};
   float reduction[OB_DSP_GROUPS] = {0};
+  float minimum_limit_gain = 1;
   double nr_in_power = 0, nr_out_power = 0;
   uint64_t invalid = 0;
   for (unsigned i = 0; i < n; ++i, ++s->clock) {
@@ -306,9 +323,8 @@ void ob_dsp_process(OBDSP *s, float *out, uint32_t n) {
       x[ch] *= s->gain_in;
       x[ch] += (filter(&s->filters[0], x[ch], ch)-x[ch])*s->mix[1];
       PROFILE_STAGE(1);
+      float delayed = s->input[ch][s->clock%FFT_N];
       s->input[ch][s->clock%FFT_N] = x[ch];
-      float delayed = s->nr_dry[ch][s->clock%FFT_N];
-      s->nr_dry[ch][s->clock%FFT_N] = x[ch];
       float wet = s->overlap[ch][s->clock%(FFT_N*2)];
       s->overlap[ch][s->clock%(FFT_N*2)] = 0;
       x[ch] = delayed + (wet-delayed)*s->mix[2];
@@ -320,14 +336,14 @@ void ob_dsp_process(OBDSP *s, float *out, uint32_t n) {
     float peak = fmaxf(fabsf(x[0]), fabsf(x[1]));
     s->gate_detector = detector(s->gate_detector, peak);
     if (s->gate_detector >= p->gate_open) {
-      s->gate_open = true; s->hold = (unsigned)(v[OBP_GATE_HOLD]*48);
+      s->gate_open = true; s->hold = p->gate_hold;
     } else if (s->gate_detector < p->gate_close) {
       if (s->hold) --s->hold; else s->gate_open = false;
     }
     float gate_target = s->gate_open ? 0 : v[OBP_GATE_RANGE];
     s->gate_db = approach(s->gate_db, gate_target,
                           gate_target < s->gate_db ? p->gate_attack : p->gate_release);
-    float gate = amplitude(-s->gate_db*s->mix[3]);
+    float gate = s->mix[3] == 0 ? 1 : amplitude(-s->gate_db*s->mix[3]);
     reduction[3] = fmaxf(reduction[3], s->gate_db*s->mix[3]);
     PROFILE_STAGE(3);
     for (unsigned ch = 0; ch < 2; ++ch) {
@@ -345,9 +361,11 @@ void ob_dsp_process(OBDSP *s, float *out, uint32_t n) {
       float bp = fmaxf(fabsf(band[0]), fabsf(band[1]));
       float gain;
       if (!stage) gain = band_reduction(bp, &s->esser_detector, &s->esser_db,
-          v[OBP_ESSER_THRESHOLD], v[OBP_ESSER_RANGE], p->esser_attack, p->esser_release);
+          v[OBP_ESSER_THRESHOLD], v[OBP_ESSER_RANGE], p->esser_attack, p->esser_release,
+          s->mix[5] != 0);
       else gain = band_reduction(bp, &s->popper_detector, &s->popper_db,
-          v[OBP_POPPER_THRESHOLD], v[OBP_POPPER_RANGE], p->popper_attack, p->popper_release);
+          v[OBP_POPPER_THRESHOLD], v[OBP_POPPER_RANGE], p->popper_attack, p->popper_release,
+          s->mix[6] != 0);
       for (unsigned ch = 0; ch < 2; ++ch) {
         float low = filter(&s->filters[6+stage], x[ch], ch);
         float target = stage ? low : x[ch] - low;
@@ -361,11 +379,12 @@ void ob_dsp_process(OBDSP *s, float *out, uint32_t n) {
     float excess = dbfs(s->comp_detector)-v[OBP_COMP_THRESHOLD];
     float compression = excess <= -3 ? 0 :
         (excess >= 3 ? excess : (excess+3)*(excess+3)/12);
-    float comp_target = compression*(1-1/v[OBP_COMP_RATIO]);
+    float comp_target = compression*p->comp_slope;
     s->comp_db = approach(s->comp_db, comp_target,
                           comp_target > s->comp_db ? p->comp_attack : p->comp_release);
-    float comp = amplitude(-s->comp_db);
-    comp = 1 + (comp*s->makeup-1)*s->mix[7];
+    float comp = 1;
+    if (s->mix[7] != 0)
+      comp = 1 + (amplitude(-s->comp_db)*s->makeup-1)*s->mix[7];
     reduction[7] = fmaxf(reduction[7], s->comp_db*s->mix[7]);
     for (unsigned ch = 0; ch < 2; ++ch) {
       x[ch] *= comp*s->gain_out;
@@ -395,7 +414,11 @@ void ob_dsp_process(OBDSP *s, float *out, uint32_t n) {
     float emitted_peak = fmaxf(fabsf(s->limit_samples[delayed_index][0]),
                                fabsf(s->limit_samples[delayed_index][1]));
     s->limit_gain = fminf(s->limit_gain, s->ceiling/fmaxf(emitted_peak, 1e-20f));
-    reduction[8] = fmaxf(reduction[8], -dbfs(s->limit_gain)*s->mix[8]);
+    // The meter reports the block maximum; steady wet gain needs one dB conversion.
+    if (s->mix[8] == 1)
+      minimum_limit_gain = fminf(minimum_limit_gain, s->limit_gain);
+    else if (s->mix[8] != 0)
+      reduction[8] = fmaxf(reduction[8], -dbfs(s->limit_gain)*s->mix[8]);
     float limit_mix = 1 + (s->limit_gain-1)*s->mix[8];
     for (unsigned ch = 0; ch < 2; ++ch) {
       float wet = s->limit_samples[delayed_index][ch]*limit_mix;
@@ -403,6 +426,8 @@ void ob_dsp_process(OBDSP *s, float *out, uint32_t n) {
     }
     PROFILE_STAGE(8);
   }
+  if (minimum_limit_gain < 1)
+    reduction[8] = fmaxf(reduction[8], -dbfs(minimum_limit_gain));
   reduction[2] = nr_in_power > 1e-20 ? fmaxf(0, 10*log10(nr_in_power/fmax(nr_out_power,1e-20))) : 0;
   for (unsigned g = 0; g < OB_DSP_GROUPS; ++g)
     atomic_store_explicit(&s->reduction_bits[g], bits(reduction[g]*(1-s->bypass)),
@@ -415,4 +440,9 @@ OBDSPStats ob_dsp_stats(OBDSP *s) {
     result.reduction_db[g] = from_bits(atomic_load(&s->reduction_bits[g]));
   result.invalid_samples = atomic_load(&s->invalid_samples);
   return result;
+}
+float ob_dsp_reduction(OBDSP *s, uint32_t group) {
+  return group < OB_DSP_GROUPS
+      ? from_bits(atomic_load_explicit(&s->reduction_bits[group], memory_order_relaxed))
+      : 0;
 }

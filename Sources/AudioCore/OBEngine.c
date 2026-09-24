@@ -13,6 +13,7 @@ struct OBEngine {
   _Atomic int32_t error;
   _Atomic uint64_t callback_max_ticks;
   _Atomic uint64_t captured_frames, render_frames;
+  bool profiling;
   uint64_t ticks_per_second;
   uint64_t ticks_per_bucket;
   _Atomic uint64_t input_callbacks, input_total_ticks, input_max_ticks;
@@ -28,6 +29,7 @@ static void update_max(_Atomic uint64_t *maximum, uint64_t value) {
                                                 memory_order_relaxed)) {}
 }
 static void record_input(OBEngine *e, uint64_t started) {
+  if (!e->profiling) return;
   uint64_t elapsed = mach_absolute_time() - started;
   atomic_fetch_add_explicit(&e->input_callbacks, 1, memory_order_relaxed);
   atomic_fetch_add_explicit(&e->input_total_ticks, elapsed, memory_order_relaxed);
@@ -35,9 +37,10 @@ static void record_input(OBEngine *e, uint64_t started) {
 }
 static void record_output(OBEngine *e, uint64_t started, UInt32 frames) {
   uint64_t elapsed = mach_absolute_time() - started;
+  update_max(&e->callback_max_ticks, elapsed);
+  if (!e->profiling) return;
   atomic_fetch_add_explicit(&e->output_callbacks, 1, memory_order_relaxed);
   atomic_fetch_add_explicit(&e->output_total_ticks, elapsed, memory_order_relaxed);
-  update_max(&e->callback_max_ticks, elapsed);
   uint32_t minimum = atomic_load_explicit(&e->output_min_frames,
                                            memory_order_relaxed);
   while ((!minimum || frames < minimum) &&
@@ -71,7 +74,7 @@ static OSStatus capture(void *context, AudioUnitRenderActionFlags *flags,
                         const AudioTimeStamp *time, UInt32 bus, UInt32 n,
                         AudioBufferList *unused) {
   OBEngine *e = context;
-  uint64_t started = mach_absolute_time();
+  uint64_t started = e->profiling ? mach_absolute_time() : 0;
   if (n > MAX_FRAMES) {
     failure(e, kAudioUnitErr_TooManyFramesToProcess);
     record_input(e, started);
@@ -236,6 +239,22 @@ void ob_engine_gain(OBEngine *e, float db, bool bypass) {
 }
 bool ob_engine_parameters(OBEngine *e, const float *v, uint32_t n) {
   return ob_signal_parameters(e->signal, v, n);
+}
+void ob_engine_set_profiling(OBEngine *e, bool enabled) {
+  e->profiling = enabled;
+}
+OSStatus ob_engine_error(OBEngine *e) {
+  return atomic_load_explicit(&e->error, memory_order_relaxed);
+}
+OBMeterValues ob_engine_meters(OBEngine *e) {
+  return ob_signal_meters(e->signal);
+}
+OBEngineDiagnostics ob_engine_diagnostics(OBEngine *e) {
+  return (OBEngineDiagnostics){
+      ob_signal_stats(e->signal), ob_engine_error(e),
+      atomic_load_explicit(&e->callback_max_ticks, memory_order_relaxed),
+      atomic_load_explicit(&e->captured_frames, memory_order_relaxed),
+      atomic_load_explicit(&e->render_frames, memory_order_relaxed)};
 }
 OBEngineStats ob_engine_stats(OBEngine *e) {
   OBEngineStats stats = {0};

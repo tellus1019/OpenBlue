@@ -73,27 +73,6 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
   return rate
 }
 
-@MainActor final class MeterLevels: ObservableObject {
-  private(set) var reductions = Array(repeating: Float(0), count: 9)
-  private(set) var inputPeak: Float = 0
-  private(set) var outputPeak: Float = 0
-
-  func update(reductions: [Float], inputPeak: Float, outputPeak: Float) {
-    objectWillChange.send()
-    self.reductions = reductions
-    self.inputPeak = inputPeak
-    self.outputPeak = outputPeak
-  }
-}
-
-@MainActor final class MeterDisplay: ObservableObject {
-  let levels = MeterLevels()
-  @Published var reductionReadouts = Array(repeating: Float(0), count: 9)
-  @Published var inputReadout: Float = 0
-  @Published var outputReadout: Float = 0
-  @Published var diagnostics = ""
-}
-
 @MainActor final class AudioModel: ObservableObject {
   @Published var settings = AudioSettings()
   @Published var enabled = false
@@ -112,9 +91,12 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
   private var formatListener: AudioObjectPropertyListenerBlock?
   private var retryTask: Task<Void, Never>?
   private var recovery = RecoveryBackoff()
-  private var timer: Timer?
-  private var lastReadoutTime: TimeInterval = 0
-  private var lastProfileTime: TimeInterval = 0
+  private var meterTimer: Timer?
+  private var readoutTimer: Timer?
+  private var healthTimer: Timer?
+  private var profileTimer: Timer?
+  private var visibleMeterWindows: Set<ObjectIdentifier> = []
+  private let callbackProfiling = ProcessInfo.processInfo.environment["OPENBLUE_CALLBACK_PROFILE"] == "1"
   private let nanosecondsPerTick: Double = {
     var info = mach_timebase_info_data_t()
     mach_timebase_info(&info)
@@ -160,11 +142,6 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
       self, selector: #selector(sleep), name: NSWorkspace.willSleepNotification, object: nil)
     NSWorkspace.shared.notificationCenter.addObserver(
       self, selector: #selector(wake), name: NSWorkspace.didWakeNotification, object: nil)
-    let meterTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-      Task { @MainActor [weak self] in self?.meters() }
-    }
-    RunLoop.main.add(meterTimer, forMode: .common)
-    timer = meterTimer
     inputClients.start { [weak self] in self?.inputClientsChanged() }
     refresh()
   }
@@ -449,6 +426,7 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
         status = "Processing settings could not be applied."
         return
       }
+      ob_engine_set_profiling(newEngine, callbackProfiling)
       let start = ob_engine_start(newEngine)
       guard start == noErr else {
         ob_engine_destroy(newEngine)
@@ -458,28 +436,97 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
       engine = newEngine
       engineInput = input.id
       engineOutput = output.id
-      lastProfileTime = ProcessInfo.processInfo.systemUptime
+      startMonitoring()
       recovery.reset()
       audioLog.info("Audio started: input=\(input.id) output=\(output.id) consumers=\(count) dspDelayFrames=\(OB_DSP_LATENCY)")
     }
     status = "Processing · \(count) external input process(es)"
   }
   func stopAudio() {
+    meterTimer?.invalidate(); meterTimer = nil
+    readoutTimer?.invalidate(); readoutTimer = nil
+    healthTimer?.invalidate(); healthTimer = nil
+    profileTimer?.invalidate(); profileTimer = nil
     if let engine {
-      let stats = ob_engine_stats(engine)
+      let stats = ob_engine_diagnostics(engine)
       audioLog.info("Audio stopping: capture=\(stats.captured_frames) dsp=\(stats.signal.output_frames) render=\(stats.render_frames) error=\(stats.error) underruns=\(stats.signal.underruns) overruns=\(stats.signal.overruns)")
-      logCallbackProfile(stats)
+      if callbackProfiling { logCallbackProfile(ob_engine_stats(engine)) }
       ob_engine_destroy(engine)
     }
     engine = nil
     engineInput = 0
     engineOutput = 0
-    meterDisplay.levels.update(
-      reductions: Array(repeating: 0, count: 9), inputPeak: 0, outputPeak: 0)
-    meterDisplay.reductionReadouts = Array(repeating: 0, count: 9)
-    meterDisplay.inputReadout = 0
-    meterDisplay.outputReadout = 0
-    lastReadoutTime = 0
+    meterDisplay.clearLevels()
+  }
+
+  private func startTimer(_ interval: TimeInterval, selector: Selector) -> Timer {
+    let timer = Timer(timeInterval: interval, target: self, selector: selector,
+                      userInfo: nil, repeats: true)
+    RunLoop.main.add(timer, forMode: .common)
+    return timer
+  }
+
+  private func startMonitoring() {
+    // Keep fault detection independent of the display and its visibility.
+    healthTimer = startTimer(1.0 / 60.0, selector: #selector(checkHealth(_:)))
+    if callbackProfiling {
+      profileTimer = startTimer(10, selector: #selector(recordProfile(_:)))
+    }
+    updateDisplayTimers()
+  }
+
+  func setMeterWindowVisible(_ id: ObjectIdentifier, visible: Bool) {
+    let wasVisible = !visibleMeterWindows.isEmpty
+    if visible { visibleMeterWindows.insert(id) }
+    else { visibleMeterWindows.remove(id) }
+    if wasVisible != !visibleMeterWindows.isEmpty { updateDisplayTimers() }
+  }
+
+  private func updateDisplayTimers() {
+    guard engine != nil, !visibleMeterWindows.isEmpty else {
+      meterTimer?.invalidate(); meterTimer = nil
+      readoutTimer?.invalidate(); readoutTimer = nil
+      return
+    }
+    if meterTimer == nil {
+      updateMeters()
+      meterTimer = startTimer(MeterDisplay.updateInterval, selector: #selector(meterTick(_:)))
+    }
+    if readoutTimer == nil {
+      updateReadouts()
+      readoutTimer = startTimer(0.2, selector: #selector(readoutTick(_:)))
+    }
+  }
+
+  @objc private func checkHealth(_ timer: Timer) {
+    guard let engine else { return }
+    let error = ob_engine_error(engine)
+    if error != noErr { scheduleRecovery("Audio processing", error: error) }
+  }
+
+  @objc private func recordProfile(_ timer: Timer) {
+    guard let engine else { return }
+    logCallbackProfile(ob_engine_stats(engine))
+  }
+
+  @objc private func meterTick(_ timer: Timer) { updateMeters() }
+  @objc private func readoutTick(_ timer: Timer) { updateReadouts() }
+
+  private func updateMeters() {
+    guard let engine else { return }
+    meterDisplay.updateLevels(ob_engine_meters(engine))
+  }
+
+  private func updateReadouts() {
+    guard let engine else { return }
+    meterDisplay.updateReadouts(ob_engine_meters(engine))
+    let stats = ob_engine_diagnostics(engine)
+    let callbackUS = Double(stats.callback_max_ticks) * nanosecondsPerTick / 1000
+    let diagnostics =
+      "Underruns: \(stats.signal.underruns)  Overruns: \(stats.signal.overruns)  Clipped: \(stats.signal.clipped_samples)\nFrames: capture \(stats.captured_frames) → DSP \(stats.signal.output_frames) → render \(stats.render_frames)"
+      + String(format: "\nMax callback: %.1f µs  Invalid DSP samples: %llu",
+               callbackUS, stats.signal.dsp.invalid_samples)
+    meterDisplay.diagnostics.update(diagnostics)
   }
   private func logCallbackProfile(_ stats: OBEngineStats) {
     let buckets = withUnsafeBytes(of: stats.output_duration_buckets) {
@@ -488,119 +535,6 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     let histogram = buckets.map(String.init).joined(separator: ",")
     audioLog.info(
       "Callback profile: inputCount=\(stats.input_callbacks) inputTicks=\(stats.input_total_ticks) inputMaxTicks=\(stats.input_max_ticks) outputCount=\(stats.output_callbacks) outputTicks=\(stats.output_total_ticks) outputMaxTicks=\(stats.callback_max_ticks) outputBudgetExceeded=\(stats.output_budget_exceeded) outputMinFrames=\(stats.output_min_frames) outputMaxFrames=\(stats.output_max_frames) histogram=\(histogram, privacy: .public)")
-  }
-  private func meters() {
-    guard let engine else { return }
-    let stats = ob_engine_stats(engine)
-    let reductions = withUnsafeBytes(of: stats.signal.dsp.reduction_db) {
-      Array($0.bindMemory(to: Float.self))
-    }
-    meterDisplay.levels.update(
-      reductions: reductions,
-      inputPeak: stats.signal.input_peak,
-      outputPeak: stats.signal.output_peak)
-    let now = ProcessInfo.processInfo.systemUptime
-    if now - lastProfileTime >= 10 {
-      logCallbackProfile(stats)
-      lastProfileTime = now
-    }
-    if now - lastReadoutTime >= 0.2 {
-      meterDisplay.reductionReadouts = reductions
-      meterDisplay.inputReadout = stats.signal.input_peak
-      meterDisplay.outputReadout = stats.signal.output_peak
-      meterDisplay.diagnostics =
-        "Underruns: \(stats.signal.underruns)  Overruns: \(stats.signal.overruns)  Clipped: \(stats.signal.clipped_samples)\nFrames: capture \(stats.captured_frames) → DSP \(stats.signal.output_frames) → render \(stats.render_frames)"
-      let callbackUS = Double(stats.callback_max_ticks) * nanosecondsPerTick / 1000
-      meterDisplay.diagnostics += String(
-        format: "\nMax callback: %.1f µs  Invalid DSP samples: %llu",
-        callbackUS, stats.signal.dsp.invalid_samples)
-      lastReadoutTime = now
-    }
-    if stats.error != noErr {
-      scheduleRecovery("Audio processing", error: stats.error)
-    }
-  }
-}
-
-struct PeakMeterBar: View {
-  @ObservedObject var levels: MeterLevels
-  let output: Bool
-
-  var body: some View {
-    let peak = output ? levels.outputPeak : levels.inputPeak
-    ZStack(alignment: .leading) {
-      Rectangle().fill(.secondary.opacity(0.2))
-      Rectangle().fill(peak >= 0.99 ? Color.red : Color.primary)
-        .scaleEffect(
-          x: max(0, min(1, (Double(20 * log10(max(peak, 0.000001))) + 60) / 60)),
-          y: 1, anchor: .leading)
-        // Interpolate for one display interval, not a long attack animation.
-        .animation(.linear(duration: 1.0 / 60.0), value: peak)
-    }
-    .frame(height: 6)
-    .clipShape(Capsule())
-    .accessibilityHidden(true) // The adjacent text exposes the same level.
-  }
-}
-
-struct ReductionMeterBar: View {
-  @ObservedObject var levels: MeterLevels
-  let index: Int
-
-  var body: some View {
-    let value = levels.reductions[index]
-    ZStack(alignment: .leading) {
-      Rectangle().fill(.secondary.opacity(0.2))
-      Rectangle().fill(.orange)
-        .scaleEffect(x: max(0, min(1, Double(value) / 30)), y: 1, anchor: .leading)
-        .animation(.linear(duration: 1.0 / 60.0), value: value)
-    }
-    .frame(height: 6)
-    .frame(maxWidth: .infinity)
-    .clipShape(Capsule())
-    .accessibilityHidden(true) // The adjacent text exposes the same reduction.
-  }
-}
-
-struct Meter: View {
-  let title: String
-  let readout: Float
-  let levels: MeterLevels
-  let output: Bool
-  var body: some View {
-    VStack(alignment: .leading, spacing: 5) {
-      HStack {
-        Text(title)
-        Spacer()
-        Text(readout > 0 ? String(format: "%.1f dBFS", 20 * log10(readout)) : "−∞ dBFS").monospacedDigit()
-      }
-      PeakMeterBar(levels: levels, output: output)
-    }
-  }
-}
-
-struct MeterPanel: View {
-  private func reduction(_ label: String, index: Int, readout: Float) -> some View {
-    VStack(alignment: .leading) {
-      HStack {
-        Text(label + " reduction")
-        Spacer()
-        Text(String(format: "%.1f dB", readout)).monospacedDigit()
-      }.font(.caption)
-      ReductionMeterBar(levels: display.levels, index: index)
-    }
-  }
-  @ObservedObject var display: MeterDisplay
-  var body: some View {
-    VStack(spacing: 22) {
-      Meter(title: "Input", readout: display.inputReadout, levels: display.levels, output: false)
-      Meter(title: "Output", readout: display.outputReadout, levels: display.levels, output: true)
-      HStack {
-        reduction("Compressor", index: 7, readout: display.reductionReadouts[7])
-        reduction("Limiter", index: 8, readout: display.reductionReadouts[8])
-      }
-      Text(display.diagnostics).font(.caption).foregroundStyle(.secondary)
-    }
   }
 }
 
@@ -639,13 +573,13 @@ struct ContentView: View {
             Spacer()
             Text(String(format: "%.1f dB", model.settings.gainDB)).monospacedDigit()
           }
-          Slider(
+          ParameterSlider(
             value: Binding(
               get: { model.settings.gainDB },
               set: {
                 model.settings.gainDB = $0
                 model.save()
-              }), in: -24...12, step: 0.5)
+              }), bounds: -24...12, step: 0.5)
           Toggle(
             "Bypass all processing",
             isOn: Binding(
@@ -663,11 +597,50 @@ struct ContentView: View {
         .font(.callout).foregroundStyle(.secondary)
       }.padding(28)
     }.frame(width: 600, height: 760)
+      .background(MeterWindowObserver(model: model))
   }
 }
 
+private let mainWindowID = "main"
+
+private struct MainWindowContent: View {
+  @Environment(\.openWindow) private var openWindow
+  let model: AudioModel
+  let delegate: AppDelegate
+
+  var body: some View {
+    ContentView(model: model)
+      .onAppear {
+        delegate.openMainWindow = { [openWindow] in
+          openWindow(id: mainWindowID)
+          NSApp.activate(ignoringOtherApps: true)
+        }
+      }
+  }
+}
+
+private struct ShowMainWindowButton: View {
+  @Environment(\.openWindow) private var openWindow
+
+  var body: some View {
+    Button("Show OpenBlue") {
+      openWindow(id: mainWindowID)
+      NSApp.activate(ignoringOtherApps: true)
+    }
+  }
+}
+
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+  var openMainWindow: (() -> Void)?
+
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+    guard let openMainWindow else { return true }
+    openMainWindow()
+    return false
+  }
 }
 @main struct OpenBlueApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
@@ -696,15 +669,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
   }
   var body: some Scene {
-    WindowGroup { ContentView(model: model) }.windowResizability(.contentSize)
+    Window("OpenBlue", id: mainWindowID) {
+      MainWindowContent(model: model, delegate: delegate)
+    }.windowResizability(.contentSize)
     MenuBarExtra("OpenBlue", systemImage: "mic") {
       Text(model.status)
       Toggle(
         "Enable OpenBlue", isOn: Binding(get: { model.enabled }, set: { model.setEnabled($0) }))
-      Button("Show OpenBlue") {
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.windows.first?.makeKeyAndOrderFront(nil)
-      }
+      ShowMainWindowButton()
       Divider()
       Button("Quit OpenBlue") {
         model.stopAudio()

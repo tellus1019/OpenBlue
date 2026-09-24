@@ -34,4 +34,5 @@ void ob_dsp_discontinuity(OBDSP *dsp);
 bool ob_dsp_update(OBDSP *dsp, const float *values, uint32_t count);
 void ob_dsp_process(OBDSP *dsp, float *stereo, uint32_t frames);
 OBDSPStats ob_dsp_stats(OBDSP *dsp);
+float ob_dsp_reduction(OBDSP *dsp, uint32_t group);
 #endif

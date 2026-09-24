@@ -83,6 +83,7 @@ static void meters(void) {
     ob_signal_render(s, out, 480);
   }
   assert(fabsf(ob_signal_stats(s).output_peak - 0.75f) < 0.00001f);
+  assert(fabsf(ob_signal_meters(s).output_raw_peak - 0.75f) < 0.00001f);
   memset(in, 0, sizeof(in));
   // Even after the audible peak is gone, intervening silent blocks must not
   // erase it before a UI read. Every rendered block contributes to the envelope.
@@ -93,6 +94,8 @@ static void meters(void) {
   for (unsigned i = 0; i < 960; ++i) assert(out[i] == 0);
   float peak = ob_signal_stats(s).output_peak;
   assert(peak > 0.01f && peak < 0.75f);
+  assert(ob_signal_meters(s).input_raw_peak == 0);
+  assert(ob_signal_meters(s).output_raw_peak == 0);
   for (unsigned i = 0; i < 30; ++i) {
     assert(ob_signal_push(s, in, 480));
     ob_signal_render(s, out, 480);
@@ -116,6 +119,7 @@ static void meters(void) {
   assert(rose);
   ob_signal_reset(s);
   assert(ob_signal_stats(s).input_peak == 0 && ob_signal_stats(s).output_peak == 0);
+  assert(ob_signal_meters(s).input_raw_peak == 0 && ob_signal_meters(s).output_raw_peak == 0);
   ob_signal_destroy(s);
 }
 static void starvation(void) {
@@ -182,6 +186,7 @@ static void *reader(void *unused) {
   return NULL;
 }
 int main(int argc, char **argv) {
+  if (argc == 2 && !strcmp(argv[1], "--meters")) { meters(); return 0; }
   if (argc == 2 && !strcmp(argv[1], "--starvation")) { starvation(); return 0; }
   gain();
   meters();

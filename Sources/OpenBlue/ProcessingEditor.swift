@@ -19,7 +19,7 @@ struct ProcessingEditor: View {
                     Double(value(p).wrappedValue), p.unit))
           .monospacedDigit().foregroundStyle(.secondary)
       }
-      Slider(value: value(p), in: p.minimum...p.maximum, step: p.step)
+      ParameterSlider(value: value(p), bounds: p.minimum...p.maximum, step: p.step)
         .accessibilityLabel(p.label)
     }
   }
@@ -45,6 +45,7 @@ struct ProcessingEditor: View {
           }
           .padding(.top, 10)
         }
+        .disclosureGroupStyle(ProcessingDisclosureStyle())
         Divider()
       }
       Text("Processing delay: 12.67 ms (608 frames), including bypass. Device and clock-buffer latency are additional.")
