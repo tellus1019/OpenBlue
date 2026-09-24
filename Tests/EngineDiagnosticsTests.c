@@ -18,6 +18,11 @@ int main(void) {
   OBEngine engine = {0};
   engine.signal = ob_signal_create();
   assert(engine.signal);
+  mach_timebase_info_data_t timebase;
+  assert(mach_timebase_info(&timebase) == KERN_SUCCESS);
+  engine.ticks_per_second = 1000000000ull * timebase.denom / timebase.numer;
+  engine.ticks_per_bucket = (uint64_t)OB_CALLBACK_BUCKET_US * 1000 *
+                            timebase.denom / timebase.numer;
   AudioTimeStamp time = {0};
   AudioUnitRenderActionFlags flags = 0;
   float output[512];
@@ -27,6 +32,7 @@ int main(void) {
   OBEngineStats stats = ob_engine_stats(&engine);
   assert(stats.render_frames == 256 && stats.captured_frames == 0 &&
          stats.signal.output_frames == 0);
+  assert(stats.output_callbacks == 1 && stats.input_callbacks == 0);
   for (unsigned i = 0; i < 8; ++i)
     assert(capture(&engine, &flags, &time, 1, 256, NULL) == noErr);
   assert(render(&engine, &flags, &time, 0, 256, &buffers) == noErr);
@@ -46,6 +52,14 @@ int main(void) {
   assert(capture(&engine, &flags, &time, 1, 256, NULL) == noErr);
   stats = ob_engine_stats(&engine);
   assert(stats.captured_frames == before_failure && stats.error == simulated_status);
+  assert(stats.input_callbacks == 17 && stats.output_callbacks == 10);
+  assert(stats.output_min_frames == 256 && stats.output_max_frames == 256);
+  assert(stats.input_total_ticks >= stats.input_max_ticks);
+  assert(stats.output_total_ticks >= stats.callback_max_ticks);
+  uint64_t histogram_total = 0;
+  for (unsigned i = 0; i < OB_CALLBACK_BUCKETS; ++i)
+    histogram_total += stats.output_duration_buckets[i];
+  assert(histogram_total == stats.output_callbacks);
   ob_signal_destroy(engine.signal);
   puts("PASS capture, DSP and render progress diagnostics; no device opened");
   return 0;

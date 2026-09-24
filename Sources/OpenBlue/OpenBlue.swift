@@ -114,6 +114,7 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
   private var recovery = RecoveryBackoff()
   private var timer: Timer?
   private var lastReadoutTime: TimeInterval = 0
+  private var lastProfileTime: TimeInterval = 0
   private let nanosecondsPerTick: Double = {
     var info = mach_timebase_info_data_t()
     mach_timebase_info(&info)
@@ -457,6 +458,7 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
       engine = newEngine
       engineInput = input.id
       engineOutput = output.id
+      lastProfileTime = ProcessInfo.processInfo.systemUptime
       recovery.reset()
       audioLog.info("Audio started: input=\(input.id) output=\(output.id) consumers=\(count) dspDelayFrames=\(OB_DSP_LATENCY)")
     }
@@ -466,6 +468,7 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     if let engine {
       let stats = ob_engine_stats(engine)
       audioLog.info("Audio stopping: capture=\(stats.captured_frames) dsp=\(stats.signal.output_frames) render=\(stats.render_frames) error=\(stats.error) underruns=\(stats.signal.underruns) overruns=\(stats.signal.overruns)")
+      logCallbackProfile(stats)
       ob_engine_destroy(engine)
     }
     engine = nil
@@ -478,6 +481,14 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     meterDisplay.outputReadout = 0
     lastReadoutTime = 0
   }
+  private func logCallbackProfile(_ stats: OBEngineStats) {
+    let buckets = withUnsafeBytes(of: stats.output_duration_buckets) {
+      Array($0.bindMemory(to: UInt64.self))
+    }
+    let histogram = buckets.map(String.init).joined(separator: ",")
+    audioLog.info(
+      "Callback profile: inputCount=\(stats.input_callbacks) inputTicks=\(stats.input_total_ticks) inputMaxTicks=\(stats.input_max_ticks) outputCount=\(stats.output_callbacks) outputTicks=\(stats.output_total_ticks) outputMaxTicks=\(stats.callback_max_ticks) outputBudgetExceeded=\(stats.output_budget_exceeded) outputMinFrames=\(stats.output_min_frames) outputMaxFrames=\(stats.output_max_frames) histogram=\(histogram, privacy: .public)")
+  }
   private func meters() {
     guard let engine else { return }
     let stats = ob_engine_stats(engine)
@@ -489,6 +500,10 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
       inputPeak: stats.signal.input_peak,
       outputPeak: stats.signal.output_peak)
     let now = ProcessInfo.processInfo.systemUptime
+    if now - lastProfileTime >= 10 {
+      logCallbackProfile(stats)
+      lastProfileTime = now
+    }
     if now - lastReadoutTime >= 0.2 {
       meterDisplay.reductionReadouts = reductions
       meterDisplay.inputReadout = stats.signal.input_peak

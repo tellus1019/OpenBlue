@@ -2,6 +2,7 @@
 #define OB_ENGINE_H
 #include "OBSignal.h"
 #include <CoreAudio/CoreAudio.h>
+enum { OB_CALLBACK_BUCKETS = 128, OB_CALLBACK_BUCKET_US = 1 };
 typedef struct OBEngine OBEngine;
 typedef struct {
   OBSignalStats signal;
@@ -9,6 +10,10 @@ typedef struct {
   uint64_t callback_max_ticks;
   uint64_t captured_frames;
   uint64_t render_frames;
+  uint64_t input_callbacks, input_total_ticks, input_max_ticks;
+  uint64_t output_callbacks, output_total_ticks, output_budget_exceeded;
+  uint32_t output_min_frames, output_max_frames;
+  uint64_t output_duration_buckets[OB_CALLBACK_BUCKETS];
 } OBEngineStats;
 // Control functions are serialized by the app. Callbacks only access audio
 // state.
