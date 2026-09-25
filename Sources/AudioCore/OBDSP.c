@@ -24,6 +24,8 @@
 #define DIRTY 4u
 #define COEFF_BLEND (1.0 / 480.0)
 #define CONTROL_BLEND (1.0f / 240.0f)
+#define FILTER_PREROLL 2400u
+#define PROCESSOR_MASK ((1u << OB_DSP_GROUPS) - 2u)
 
 static const OBParameterInfo parameters[] = {
 #define OB_PARAM(id, key, label, unit, group, lo, hi, initial, step) \
@@ -46,7 +48,11 @@ bool ob_parameters_valid(const float *v, uint32_t n) {
   return true;
 }
 typedef struct { double b0, b1, b2, a1, a2; } Coeff;
-typedef struct { Coeff c; double x1[2], x2[2], y1[2], y2[2]; } Filter;
+typedef struct {
+  Coeff c;
+  double x1[2], x2[2], y1[2], y2[2];
+  bool smoothing;
+} Filter;
 typedef struct {
   float v[OBP_COUNT];
   // HPF, three EQ bands, two detection filters, two complementary split LPFs.
@@ -55,6 +61,8 @@ typedef struct {
   float gate_attack, gate_release, gate_open, gate_close;
   float esser_attack, esser_release, popper_attack, popper_release;
   float comp_attack, comp_release, ceiling, limit_release;
+  float comp_slope;
+  unsigned gate_hold;
 } Prepared;
 struct OBDSP {
 #ifdef OB_DSP_PROFILE
@@ -66,10 +74,12 @@ struct OBDSP {
   FFTSetup fft;
   Filter filters[8];
   float gain_in, gain_out, makeup, mix[OB_DSP_GROUPS], bypass;
+  bool active[OB_DSP_GROUPS];
+  unsigned preroll[OB_DSP_GROUPS];
   float input[2][FFT_N], overlap[2][FFT_N * 2], window[FFT_N];
-  float real[2][FFT_N], imag[2][FFT_N], spectral_gain[FFT_N / 2 + 1];
+  float real[2][FFT_N / 2], imag[2][FFT_N / 2], spectral_gain[FFT_N / 2 + 1];
   float spectral_target[FFT_N / 2 + 1];
-  float nr_dry[2][FFT_N], dry[2][OB_DSP_LATENCY];
+  float dry[2][OB_DSP_LATENCY];
   uint64_t clock;
   float gate_detector, gate_db, comp_detector, comp_db;
   float esser_detector, esser_db, popper_detector, popper_db;
@@ -138,12 +148,14 @@ static Prepared prepare(const float *v) {
   p.gate_release = response(v[OBP_GATE_RELEASE]);
   p.gate_open = amplitude(v[OBP_GATE_THRESHOLD]);
   p.gate_close = amplitude(v[OBP_GATE_THRESHOLD]-3);
+  p.gate_hold = (unsigned)(v[OBP_GATE_HOLD]*48);
   p.esser_attack = response(v[OBP_ESSER_ATTACK]);
   p.esser_release = response(v[OBP_ESSER_RELEASE]);
   p.popper_attack = response(v[OBP_POPPER_ATTACK]);
   p.popper_release = response(v[OBP_POPPER_RELEASE]);
   p.comp_attack = response(v[OBP_COMP_ATTACK]);
   p.comp_release = response(v[OBP_COMP_RELEASE]);
+  p.comp_slope = 1-1/v[OBP_COMP_RATIO];
   p.ceiling = amplitude(v[OBP_LIMIT_CEILING]);
   p.limit_release = response(v[OBP_LIMIT_RELEASE]);
   return p;
@@ -155,8 +167,8 @@ OBDSP *ob_dsp_create(void) {
   if (!s->fft) { free(s); return NULL; }
   // Warm the in-place transform before the first audio callback.
   DSPSplitComplex warm = {s->real[0], s->imag[0]};
-  vDSP_fft_zip(s->fft, &warm, 1, 9, FFT_FORWARD);
-  vDSP_fft_zip(s->fft, &warm, 1, 9, FFT_INVERSE);
+  vDSP_fft_zrip(s->fft, &warm, 1, 9, FFT_FORWARD);
+  vDSP_fft_zrip(s->fft, &warm, 1, 9, FFT_INVERSE);
   for (unsigned i = 0; i < FFT_N; ++i)
     s->window[i] = sqrtf(.5f - .5f*cosf(2*M_PI*i/FFT_N));
   float v[OBP_COUNT];
@@ -178,10 +190,11 @@ void ob_dsp_discontinuity(OBDSP *s) {
   for (unsigned i = 0; i < 8; ++i) s->filters[i].c = p->filters[i];
   memset(s->input, 0, sizeof(s->input));
   memset(s->overlap, 0, sizeof(s->overlap));
-  memset(s->nr_dry, 0, sizeof(s->nr_dry));
   memset(s->dry, 0, sizeof(s->dry));
   memset(s->limit_samples, 0, sizeof(s->limit_samples));
   memset(s->mix, 0, sizeof(s->mix));
+  memset(s->active, 0, sizeof(s->active));
+  memset(s->preroll, 0, sizeof(s->preroll));
   s->clock = s->queue_head = s->queue_tail = 0;
   s->gain_in = p->gain_in; s->gain_out = p->gain_out; s->makeup = p->makeup;
   s->bypass = p->v[OBP_BYPASS];
@@ -211,9 +224,15 @@ bool ob_dsp_update(OBDSP *s, const float *v, uint32_t n) {
   return true;
 }
 static void smooth_coeff(Filter *f, Coeff target) {
+  if (!f->smoothing) return;
+  Coeff previous = f->c;
 #define MOVE(field) f->c.field += (target.field - f->c.field) * COEFF_BLEND
   MOVE(b0); MOVE(b1); MOVE(b2); MOVE(a1); MOVE(a2);
 #undef MOVE
+  // Stop only when the same arithmetic no longer changes any coefficient.
+  f->smoothing = f->c.b0 != previous.b0 || f->c.b1 != previous.b1 ||
+                 f->c.b2 != previous.b2 || f->c.a1 != previous.a1 ||
+                 f->c.a2 != previous.a2;
 }
 static float filter(Filter *f, float x, unsigned ch) {
   Coeff c = f->c;
@@ -225,18 +244,22 @@ static float filter(Filter *f, float x, unsigned ch) {
 }
 static void spectral_frame(OBDSP *s, const Prepared *p) {
   for (unsigned ch = 0; ch < 2; ++ch) {
-    for (unsigned i = 0; i < FFT_N; ++i) {
-      s->real[ch][i] = s->input[ch][(s->clock+1+i)%FFT_N]*s->window[i];
-      s->imag[ch][i] = 0;
+    // Even/odd packing and half-scale input compensate the real FFT's factor of two.
+    for (unsigned i = 0; i < FFT_N/2; ++i) {
+      s->real[ch][i] = .5f * (s->input[ch][(s->clock+1+2*i)%FFT_N]*s->window[2*i]);
+      s->imag[ch][i] = .5f * (s->input[ch][(s->clock+2+2*i)%FFT_N]*s->window[2*i+1]);
     }
     DSPSplitComplex z = {s->real[ch], s->imag[ch]};
-    vDSP_fft_zip(s->fft, &z, 1, 9, FFT_FORWARD);
+    vDSP_fft_zrip(s->fft, &z, 1, 9, FFT_FORWARD);
   }
   for (unsigned k = 0; k <= FFT_N/2; ++k) {
     float power = 0;
-    for (unsigned ch = 0; ch < 2; ++ch)
-      power = fmaxf(power, s->real[ch][k]*s->real[ch][k] +
-                            s->imag[ch][k]*s->imag[ch][k]);
+    for (unsigned ch = 0; ch < 2; ++ch) {
+      // DC and Nyquist are separate real bins packed into element zero.
+      float re = k == FFT_N/2 ? s->imag[ch][0] : s->real[ch][k];
+      float im = k == 0 || k == FFT_N/2 ? 0 : s->imag[ch][k];
+      power = fmaxf(power, re*re + im*im);
+    }
     s->spectral_target[k] = fmaxf(p->nr_min, 1-p->nr_power/fmaxf(power, 1e-20f));
   }
   for (unsigned k = 0; k <= FFT_N/2; ++k) {
@@ -246,19 +269,76 @@ static void spectral_frame(OBDSP *s, const Prepared *p) {
     float a = target < s->spectral_gain[k] ? .3f : p->nr_release;
     s->spectral_gain[k] = approach(s->spectral_gain[k], target, a);
     for (unsigned ch = 0; ch < 2; ++ch) {
-      s->real[ch][k] *= s->spectral_gain[k]; s->imag[ch][k] *= s->spectral_gain[k];
-      if (k && k < FFT_N/2) {
-        s->real[ch][FFT_N-k] *= s->spectral_gain[k];
-        s->imag[ch][FFT_N-k] *= s->spectral_gain[k];
+      if (k == FFT_N/2) {
+        s->imag[ch][0] *= s->spectral_gain[k];
+      } else {
+        s->real[ch][k] *= s->spectral_gain[k];
+        if (k) s->imag[ch][k] *= s->spectral_gain[k];
       }
     }
   }
   for (unsigned ch = 0; ch < 2; ++ch) {
     DSPSplitComplex z = {s->real[ch], s->imag[ch]};
-    vDSP_fft_zip(s->fft, &z, 1, 9, FFT_INVERSE);
-    for (unsigned i = 0; i < FFT_N; ++i)
-      s->overlap[ch][(s->clock+1+i)%(FFT_N*2)] +=
-          s->real[ch][i] * s->window[i] / FFT_N;
+    vDSP_fft_zrip(s->fft, &z, 1, 9, FFT_INVERSE);
+    for (unsigned i = 0; i < FFT_N/2; ++i) {
+      s->overlap[ch][(s->clock+1+2*i)%(FFT_N*2)] +=
+          s->real[ch][i] * s->window[2*i] / FFT_N;
+      s->overlap[ch][(s->clock+2+2*i)%(FFT_N*2)] +=
+          s->imag[ch][i] * s->window[2*i+1] / FFT_N;
+    }
+  }
+}
+
+static const unsigned filter_group[8] = {1, 4, 4, 4, 5, 6, 5, 6};
+static const unsigned enable[OB_DSP_GROUPS] = {
+  0, OBP_HPF_ON, OBP_NR_ON, OBP_GATE_ON, OBP_EQ_ON,
+  OBP_ESSER_ON, OBP_POPPER_ON, OBP_COMP_ON, OBP_LIMIT_ON
+};
+
+static void wake_group(OBDSP *s, const Prepared *p, unsigned group) {
+  for (unsigned f = 0; f < 8; ++f) {
+    if (filter_group[f] != group) continue;
+    memset(&s->filters[f], 0, sizeof(s->filters[f]));
+    s->filters[f].c = p->filters[f];
+  }
+  s->preroll[group] = FILTER_PREROLL;
+  switch (group) {
+    case 2:
+      memset(s->overlap, 0, sizeof(s->overlap));
+      for (unsigned k = 0; k <= FFT_N/2; ++k) s->spectral_gain[k] = 1;
+      // Keep dry input history; wait for complete overlapping output windows.
+      s->preroll[group] = FFT_N + HOP;
+      break;
+    case 3:
+      s->gate_detector = s->gate_db = 0;
+      s->gate_open = false; s->hold = 0;
+      break;
+    case 5: s->esser_detector = s->esser_db = 0; break;
+    case 6: s->popper_detector = s->popper_db = 0; break;
+    case 7: s->comp_detector = s->comp_db = 0; break;
+    case 8:
+      s->queue_head = s->queue_tail = 0;
+      s->limit_gain = 1;
+      s->preroll[group] = LIMIT_RING;
+      break;
+    default: break;
+  }
+  s->active[group] = true;
+}
+
+static void update_group(OBDSP *s, const Prepared *p, unsigned group, bool enabled) {
+  if (!s->active[group]) {
+    if (!enabled) return;
+    wake_group(s, p, group);
+  }
+  if (!enabled) {
+    s->preroll[group] = 0;
+    s->mix[group] = blend(s->mix[group], 0);
+    if (s->mix[group] == 0) s->active[group] = false;
+  } else if (s->preroll[group]) {
+    --s->preroll[group];
+  } else if (s->mix[group] != 1) {
+    s->mix[group] = blend(s->mix[group], 1);
   }
 }
 static float detector(float previous, float peak) {
@@ -266,21 +346,20 @@ static float detector(float previous, float peak) {
   return fmaxf(peak, previous * 0.9989588757f);
 }
 static float band_reduction(float peak, float *envelope, float *reduction,
-                            float threshold, float range, float attack, float release) {
+                            float threshold, float range, float attack, float release,
+                            bool audible) {
   *envelope = detector(*envelope, peak);
   float target = fminf(range, fmaxf(0, dbfs(*envelope)-threshold));
   *reduction = approach(*reduction, target, target > *reduction ? attack : release);
-  return amplitude(-*reduction);
+  return audible ? amplitude(-*reduction) : 1;
 }
-void ob_dsp_process(OBDSP *s, float *out, uint32_t n) {
-  if (atomic_load_explicit(&s->middle, memory_order_acquire) & DIRTY)
-    s->front = atomic_exchange_explicit(&s->middle, s->front,
-                                        memory_order_acq_rel) & 3;
-  const Prepared *p = &s->slots[s->front];
+// Constant activity at the call site removes suspension branches from the wet path.
+static inline __attribute__((always_inline)) void process_block(
+    OBDSP *s, float *out, uint32_t n, const Prepared *p, unsigned active_mask,
+    bool update_activity, bool update_coefficients) {
   const float *v = p->v;
-  const unsigned enable[] = {0, OBP_HPF_ON, OBP_NR_ON, OBP_GATE_ON, OBP_EQ_ON,
-                             OBP_ESSER_ON, OBP_POPPER_ON, OBP_COMP_ON, OBP_LIMIT_ON};
   float reduction[OB_DSP_GROUPS] = {0};
+  float minimum_limit_gain = 1;
   double nr_in_power = 0, nr_out_power = 0;
   uint64_t invalid = 0;
   for (unsigned i = 0; i < n; ++i, ++s->clock) {
@@ -298,56 +377,76 @@ void ob_dsp_process(OBDSP *s, float *out, uint32_t n) {
     s->makeup += (p->makeup-s->makeup)*CONTROL_BLEND;
     s->ceiling = blend(s->ceiling, p->ceiling);
     s->bypass = blend(s->bypass, v[OBP_BYPASS]);
-    for (unsigned g = 1; g < OB_DSP_GROUPS; ++g)
-      s->mix[g] = blend(s->mix[g], v[enable[g]]);
-    for (unsigned f = 0; f < 8; ++f) smooth_coeff(&s->filters[f], p->filters[f]);
+    if (update_activity) {
+      active_mask = 0;
+      for (unsigned g = 1; g < OB_DSP_GROUPS; ++g) {
+        update_group(s, p, g, v[enable[g]] != 0);
+        if (s->active[g]) active_mask |= 1u << g;
+      }
+    }
+    if (update_coefficients) {
+      for (unsigned f = 0; f < 8; ++f)
+        if (active_mask & (1u << filter_group[f]))
+          smooth_coeff(&s->filters[f], p->filters[f]);
+    }
     PROFILE_STAGE(0);
     for (unsigned ch = 0; ch < 2; ++ch) {
       x[ch] *= s->gain_in;
-      x[ch] += (filter(&s->filters[0], x[ch], ch)-x[ch])*s->mix[1];
+      if (active_mask & (1u << 1))
+        x[ch] += (filter(&s->filters[0], x[ch], ch)-x[ch])*s->mix[1];
       PROFILE_STAGE(1);
+      float delayed = s->input[ch][s->clock%FFT_N];
       s->input[ch][s->clock%FFT_N] = x[ch];
-      float delayed = s->nr_dry[ch][s->clock%FFT_N];
-      s->nr_dry[ch][s->clock%FFT_N] = x[ch];
-      float wet = s->overlap[ch][s->clock%(FFT_N*2)];
-      s->overlap[ch][s->clock%(FFT_N*2)] = 0;
-      x[ch] = delayed + (wet-delayed)*s->mix[2];
-      nr_in_power += delayed*delayed; nr_out_power += x[ch]*x[ch];
+      x[ch] = delayed;
+      if (active_mask & (1u << 2)) {
+        float wet = s->overlap[ch][s->clock%(FFT_N*2)];
+        s->overlap[ch][s->clock%(FFT_N*2)] = 0;
+        x[ch] += (wet-delayed)*s->mix[2];
+        nr_in_power += delayed*delayed; nr_out_power += x[ch]*x[ch];
+      }
       PROFILE_STAGE(2);
     }
-    if (s->clock%HOP == HOP-1) spectral_frame(s, p);
+    if ((active_mask & (1u << 2)) && s->clock%HOP == HOP-1) spectral_frame(s, p);
     PROFILE_STAGE(2);
     float peak = fmaxf(fabsf(x[0]), fabsf(x[1]));
-    s->gate_detector = detector(s->gate_detector, peak);
-    if (s->gate_detector >= p->gate_open) {
-      s->gate_open = true; s->hold = (unsigned)(v[OBP_GATE_HOLD]*48);
-    } else if (s->gate_detector < p->gate_close) {
-      if (s->hold) --s->hold; else s->gate_open = false;
+    float gate = 1;
+    if (active_mask & (1u << 3)) {
+      s->gate_detector = detector(s->gate_detector, peak);
+      if (s->gate_detector >= p->gate_open) {
+        s->gate_open = true; s->hold = p->gate_hold;
+      } else if (s->gate_detector < p->gate_close) {
+        if (s->hold) --s->hold; else s->gate_open = false;
+      }
+      float gate_target = s->gate_open ? 0 : v[OBP_GATE_RANGE];
+      s->gate_db = approach(s->gate_db, gate_target,
+                            gate_target < s->gate_db ? p->gate_attack : p->gate_release);
+      gate = s->mix[3] == 0 ? 1 : amplitude(-s->gate_db*s->mix[3]);
+      reduction[3] = fmaxf(reduction[3], s->gate_db*s->mix[3]);
     }
-    float gate_target = s->gate_open ? 0 : v[OBP_GATE_RANGE];
-    s->gate_db = approach(s->gate_db, gate_target,
-                          gate_target < s->gate_db ? p->gate_attack : p->gate_release);
-    float gate = amplitude(-s->gate_db*s->mix[3]);
-    reduction[3] = fmaxf(reduction[3], s->gate_db*s->mix[3]);
     PROFILE_STAGE(3);
     for (unsigned ch = 0; ch < 2; ++ch) {
       x[ch] *= gate;
       PROFILE_STAGE(3);
-      float eq = x[ch];
-      for (unsigned f = 1; f < 4; ++f) eq = filter(&s->filters[f], eq, ch);
-      x[ch] += (eq-x[ch])*s->mix[4];
+      if (active_mask & (1u << 4)) {
+        float eq = x[ch];
+        for (unsigned f = 1; f < 4; ++f) eq = filter(&s->filters[f], eq, ch);
+        x[ch] += (eq-x[ch])*s->mix[4];
+      }
       PROFILE_STAGE(4);
     }
     for (unsigned stage = 0; stage < 2; ++stage) {
+      if (!(active_mask & (1u << (5+stage)))) { PROFILE_STAGE(5+stage); continue; }
       float band[2];
       for (unsigned ch = 0; ch < 2; ++ch)
         band[ch] = filter(&s->filters[4+stage], x[ch], ch);
       float bp = fmaxf(fabsf(band[0]), fabsf(band[1]));
       float gain;
       if (!stage) gain = band_reduction(bp, &s->esser_detector, &s->esser_db,
-          v[OBP_ESSER_THRESHOLD], v[OBP_ESSER_RANGE], p->esser_attack, p->esser_release);
+          v[OBP_ESSER_THRESHOLD], v[OBP_ESSER_RANGE], p->esser_attack, p->esser_release,
+          s->mix[5] != 0);
       else gain = band_reduction(bp, &s->popper_detector, &s->popper_db,
-          v[OBP_POPPER_THRESHOLD], v[OBP_POPPER_RANGE], p->popper_attack, p->popper_release);
+          v[OBP_POPPER_THRESHOLD], v[OBP_POPPER_RANGE], p->popper_attack, p->popper_release,
+          s->mix[6] != 0);
       for (unsigned ch = 0; ch < 2; ++ch) {
         float low = filter(&s->filters[6+stage], x[ch], ch);
         float target = stage ? low : x[ch] - low;
@@ -357,57 +456,95 @@ void ob_dsp_process(OBDSP *s, float *out, uint32_t n) {
                                 (stage ? s->popper_db : s->esser_db)*s->mix[5+stage]);
       PROFILE_STAGE(5+stage);
     }
-    s->comp_detector = detector(s->comp_detector, fmaxf(fabsf(x[0]), fabsf(x[1])));
-    float excess = dbfs(s->comp_detector)-v[OBP_COMP_THRESHOLD];
-    float compression = excess <= -3 ? 0 :
-        (excess >= 3 ? excess : (excess+3)*(excess+3)/12);
-    float comp_target = compression*(1-1/v[OBP_COMP_RATIO]);
-    s->comp_db = approach(s->comp_db, comp_target,
-                          comp_target > s->comp_db ? p->comp_attack : p->comp_release);
-    float comp = amplitude(-s->comp_db);
-    comp = 1 + (comp*s->makeup-1)*s->mix[7];
-    reduction[7] = fmaxf(reduction[7], s->comp_db*s->mix[7]);
+    float comp = 1;
+    if (active_mask & (1u << 7)) {
+      s->comp_detector = detector(s->comp_detector, fmaxf(fabsf(x[0]), fabsf(x[1])));
+      float excess = dbfs(s->comp_detector)-v[OBP_COMP_THRESHOLD];
+      float compression = excess <= -3 ? 0 :
+          (excess >= 3 ? excess : (excess+3)*(excess+3)/12);
+      float comp_target = compression*p->comp_slope;
+      s->comp_db = approach(s->comp_db, comp_target,
+                            comp_target > s->comp_db ? p->comp_attack : p->comp_release);
+      if (s->mix[7] != 0)
+        comp = 1 + (amplitude(-s->comp_db)*s->makeup-1)*s->mix[7];
+      reduction[7] = fmaxf(reduction[7], s->comp_db*s->mix[7]);
+    }
     for (unsigned ch = 0; ch < 2; ++ch) {
       x[ch] *= comp*s->gain_out;
       if (!isfinite(x[ch])) { x[ch] = 0; ++invalid; }
       s->limit_samples[s->clock%LIMIT_RING][ch] = x[ch];
     }
     PROFILE_STAGE(7);
-    peak = fmaxf(fabsf(x[0]), fabsf(x[1]));
-    while (s->queue_head < s->queue_tail &&
-           s->peak_time[s->queue_head%128] + LOOK < s->clock) ++s->queue_head;
-    while (s->queue_head < s->queue_tail &&
-           s->peak_queue[(s->queue_tail-1)%128] <= peak) --s->queue_tail;
-    s->peak_queue[s->queue_tail%128] = peak;
-    s->peak_time[s->queue_tail%128] = s->clock;
-    ++s->queue_tail;
-    float maximum = s->peak_queue[s->queue_head%128];
-    float limit = fminf(1, s->ceiling/fmaxf(maximum, 1e-20f));
-    // Each observed peak remains in the future window for LOOK+1 frames.
-    // Descend from at most unity to its required gain before that peak exits.
-    // This avoids an instantaneous cut when a future impulse is discovered.
-    s->limit_gain = limit < s->limit_gain ?
-        fmaxf(limit, s->limit_gain-(1-limit)/LOOK) :
-        approach(s->limit_gain, limit, p->limit_release);
-    // A lower user ceiling can arrive after a sample entered lookahead.
-    // Follow its smoothed value on the sample being emitted as well.
     unsigned delayed_index = (unsigned)((s->clock+1)%LIMIT_RING);
-    float emitted_peak = fmaxf(fabsf(s->limit_samples[delayed_index][0]),
-                               fabsf(s->limit_samples[delayed_index][1]));
-    s->limit_gain = fminf(s->limit_gain, s->ceiling/fmaxf(emitted_peak, 1e-20f));
-    reduction[8] = fmaxf(reduction[8], -dbfs(s->limit_gain)*s->mix[8]);
-    float limit_mix = 1 + (s->limit_gain-1)*s->mix[8];
+    float limit_mix = 1;
+    if (active_mask & (1u << 8)) {
+      peak = fmaxf(fabsf(x[0]), fabsf(x[1]));
+      while (s->queue_head < s->queue_tail &&
+             s->peak_time[s->queue_head%128] + LOOK < s->clock) ++s->queue_head;
+      while (s->queue_head < s->queue_tail &&
+             s->peak_queue[(s->queue_tail-1)%128] <= peak) --s->queue_tail;
+      s->peak_queue[s->queue_tail%128] = peak;
+      s->peak_time[s->queue_tail%128] = s->clock;
+      ++s->queue_tail;
+      float maximum = s->peak_queue[s->queue_head%128];
+      float limit = fminf(1, s->ceiling/fmaxf(maximum, 1e-20f));
+      // Each observed peak remains in the future window for LOOK+1 frames.
+      // Descend from at most unity to its required gain before that peak exits.
+      // This avoids an instantaneous cut when a future impulse is discovered.
+      s->limit_gain = limit < s->limit_gain ?
+          fmaxf(limit, s->limit_gain-(1-limit)/LOOK) :
+          approach(s->limit_gain, limit, p->limit_release);
+      // A lower user ceiling can arrive after a sample entered lookahead.
+      // Follow its smoothed value on the sample being emitted as well.
+      float emitted_peak = fmaxf(fabsf(s->limit_samples[delayed_index][0]),
+                                 fabsf(s->limit_samples[delayed_index][1]));
+      s->limit_gain = fminf(s->limit_gain, s->ceiling/fmaxf(emitted_peak, 1e-20f));
+      // The meter reports the block maximum; steady wet gain needs one dB conversion.
+      if (s->mix[8] == 1)
+        minimum_limit_gain = fminf(minimum_limit_gain, s->limit_gain);
+      else if (s->mix[8] != 0)
+        reduction[8] = fmaxf(reduction[8], -dbfs(s->limit_gain)*s->mix[8]);
+      limit_mix = 1 + (s->limit_gain-1)*s->mix[8];
+    }
     for (unsigned ch = 0; ch < 2; ++ch) {
       float wet = s->limit_samples[delayed_index][ch]*limit_mix;
       out[2*i+ch] = wet + (dry[ch]-wet)*s->bypass;
     }
     PROFILE_STAGE(8);
   }
+  if (minimum_limit_gain < 1)
+    reduction[8] = fmaxf(reduction[8], -dbfs(minimum_limit_gain));
   reduction[2] = nr_in_power > 1e-20 ? fmaxf(0, 10*log10(nr_in_power/fmax(nr_out_power,1e-20))) : 0;
   for (unsigned g = 0; g < OB_DSP_GROUPS; ++g)
     atomic_store_explicit(&s->reduction_bits[g], bits(reduction[g]*(1-s->bypass)),
                            memory_order_relaxed);
   atomic_fetch_add_explicit(&s->invalid_samples, invalid, memory_order_relaxed);
+}
+void ob_dsp_process(OBDSP *s, float *out, uint32_t n) {
+  if (atomic_load_explicit(&s->middle, memory_order_acquire) & DIRTY) {
+    s->front = atomic_exchange_explicit(&s->middle, s->front,
+                                        memory_order_acq_rel) & 3;
+    for (unsigned f = 0; f < 8; ++f) s->filters[f].smoothing = true;
+  }
+  const Prepared *p = &s->slots[s->front];
+  unsigned active_mask = 0;
+  bool update_activity = false, update_coefficients = false;
+  for (unsigned g = 1; g < OB_DSP_GROUPS; ++g) {
+    if (s->active[g]) active_mask |= 1u << g;
+    bool enabled = p->v[enable[g]] != 0;
+    if (s->active[g] != enabled || s->preroll[g] || s->mix[g] != p->v[enable[g]])
+      update_activity = true;
+  }
+  for (unsigned f = 0; f < 8; ++f)
+    if ((active_mask & (1u << filter_group[f])) && s->filters[f].smoothing)
+      update_coefficients = true;
+
+  // The snapshot stays fixed for this block. Only transitions need sample updates.
+  // Waking filters copy its coefficients directly, so they need no coefficient ramp.
+  if (active_mask == PROCESSOR_MASK && !update_activity && !update_coefficients)
+    process_block(s, out, n, p, PROCESSOR_MASK, false, false);
+  else
+    process_block(s, out, n, p, active_mask, update_activity, update_coefficients);
 }
 OBDSPStats ob_dsp_stats(OBDSP *s) {
   OBDSPStats result = {0};
@@ -415,4 +552,9 @@ OBDSPStats ob_dsp_stats(OBDSP *s) {
     result.reduction_db[g] = from_bits(atomic_load(&s->reduction_bits[g]));
   result.invalid_samples = atomic_load(&s->invalid_samples);
   return result;
+}
+float ob_dsp_reduction(OBDSP *s, uint32_t group) {
+  return group < OB_DSP_GROUPS
+      ? from_bits(atomic_load_explicit(&s->reduction_bits[group], memory_order_relaxed))
+      : 0;
 }

@@ -6,6 +6,12 @@
 
 typedef struct OBSignal OBSignal;
 typedef struct {
+  float input_peak, output_peak;
+  float compressor_reduction, limiter_reduction;
+  // Latest rendered block peaks without the display release envelope.
+  float input_raw_peak, output_raw_peak;
+} OBMeterValues;
+typedef struct {
   // Display envelopes with immediate attack and 200 dB/s release, not raw block peaks.
   float input_peak, output_peak;
   uint64_t underruns, overruns, clipped_samples, output_frames;
@@ -22,4 +28,5 @@ bool ob_signal_parameters(OBSignal *signal, const float *values, uint32_t count)
 bool ob_signal_push(OBSignal *signal, const float *stereo, uint32_t frames);
 void ob_signal_render(OBSignal *signal, float *stereo, uint32_t frames);
 OBSignalStats ob_signal_stats(OBSignal *signal);
+OBMeterValues ob_signal_meters(OBSignal *signal);
 #endif

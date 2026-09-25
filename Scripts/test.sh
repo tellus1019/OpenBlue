@@ -7,6 +7,14 @@ xcrun clang -std=c11 -O2 -Wall -Wextra -Werror \
     -I Sources/AudioCore/include Sources/AudioCore/OBDSP.c Tests/DSPTests.c \
     -framework Accelerate -o .build/tests/dsp
 .build/tests/dsp
+xcrun clang -std=c11 -O2 -Wall -Wextra -Werror \
+    -I Sources/AudioCore/include Tests/DSPFFTTests.c \
+    -framework Accelerate -o .build/tests/dsp-fft
+.build/tests/dsp-fft
+xcrun clang -std=c11 -O2 -Wall -Wextra -Werror \
+    -I Sources/AudioCore/include Tests/DSPActivityTests.c \
+    -framework Accelerate -o .build/tests/dsp-activity
+.build/tests/dsp-activity
 xcrun clang -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
     -I Sources/AudioCore/include -I Driver Sources/AudioCore/OBSignal.c Sources/AudioCore/OBDSP.c -framework Accelerate Tests/SignalTests.c \
     -o .build/tests/signal

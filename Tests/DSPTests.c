@@ -331,8 +331,47 @@ static void boundaries(void) {
   ob_dsp_destroy(s);
   puts("PASS parameter endpoints and non-finite input isolation");
 }
+static void block_meter_parity(void) {
+  // Callback partitioning must not change audio or peak limiter reduction.
+  defaults();
+  config[OBP_LIMIT_CEILING] = -12;
+  config[OBP_NR_FLOOR] = -40;
+  config[OBP_COMP_THRESHOLD] = -30;
+  OBDSP *blocked = create(), *single = create();
+  const unsigned sizes[] = {48, 256, 511, 1};
+  const unsigned enabled[] = {OBP_HPF_ON, OBP_NR_ON, OBP_GATE_ON, OBP_EQ_ON,
+      OBP_ESSER_ON, OBP_POPPER_ON, OBP_COMP_ON, OBP_LIMIT_ON};
+  unsigned position = 0;
+  for (unsigned block = 0; block < 160; ++block) {
+    if (block % 40 == 0) {
+      for (unsigned g = 0; g < sizeof(enabled)/sizeof(enabled[0]); ++g)
+        config[enabled[g]] = (block / 40) % 2;
+      assert(ob_dsp_update(blocked, config, OBP_COUNT));
+      assert(ob_dsp_update(single, config, OBP_COUNT));
+    }
+    unsigned n = sizes[block % 4];
+    float samples[1022], reference[1022];
+    for (unsigned i = 0; i < n; ++i) {
+      float x = 2.0f*sinf(2*PI*997*(position+i)/SR);
+      samples[2*i] = reference[2*i] = x;
+      samples[2*i+1] = reference[2*i+1] = -.3f*x;
+    }
+    ob_dsp_process(blocked, samples, n);
+    float maximum = 0;
+    for (unsigned i = 0; i < n; ++i) {
+      ob_dsp_process(single, reference+2*i, 1);
+      maximum = fmaxf(maximum, ob_dsp_stats(single).reduction_db[8]);
+    }
+    for (unsigned i = 0; i < n*2; ++i)
+      assert(fabsf(samples[i]-reference[i]) < 1e-6f);
+    assert(fabsf(ob_dsp_stats(blocked).reduction_db[8]-maximum) < 1e-5f);
+    position += n;
+  }
+  ob_dsp_destroy(blocked); ob_dsp_destroy(single);
+  puts("PASS block audio and limiter meter parity through processor transitions");
+}
 int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "--concurrency")) { updates(); return 0; }
-  parity();gain_filters();dynamics();limiter_ceiling_change();band_processing();noise_reduction();updates();timing();gate_hold_release();switching();boundaries();
+  parity();gain_filters();dynamics();limiter_ceiling_change();band_processing();noise_reduction();updates();timing();gate_hold_release();switching();boundaries();block_meter_parity();
   puts("PASS all DSP signal tests; no audio device opened");
 }

@@ -17,6 +17,7 @@ struct OBSignal {
   _Atomic uint64_t written, released;
   _Atomic uint64_t underruns, overruns, clipped, frames;
   _Atomic uint32_t input_peak_bits, output_peak_bits, fill;
+  _Atomic uint32_t input_raw_peak_bits, output_raw_peak_bits;
   OBDSP *dsp;
   float parameters[OBP_COUNT];
   double position;
@@ -72,6 +73,8 @@ void ob_signal_reset(OBSignal *s) {
   atomic_store(&s->frames, 0);
   atomic_store(&s->input_peak_bits, 0);
   atomic_store(&s->output_peak_bits, 0);
+  atomic_store(&s->input_raw_peak_bits, 0);
+  atomic_store(&s->output_raw_peak_bits, 0);
   atomic_store(&s->fill, 0);
   ob_dsp_reset(s->dsp);
   s->position = 15;
@@ -106,6 +109,8 @@ bool ob_signal_push(OBSignal *s, const float *in, uint32_t n) {
   return true;
 }
 static void publish_meters(OBSignal *s, float input, float output, uint32_t n) {
+  atomic_store_explicit(&s->input_raw_peak_bits, bits(input), memory_order_relaxed);
+  atomic_store_explicit(&s->output_raw_peak_bits, bits(output), memory_order_relaxed);
   // Display-only peak envelope: immediate attack, 200 dB/second release at
   // the fixed 48 kHz rate. Every rendered block contributes, including those
   // between UI reads. This never changes the audio samples or buffers.
@@ -180,4 +185,12 @@ OBSignalStats ob_signal_stats(OBSignal *s) {
                          atomic_load(&s->frames),
                          atomic_load(&s->fill),
                          ob_dsp_stats(s->dsp)};
+}
+OBMeterValues ob_signal_meters(OBSignal *s) {
+  return (OBMeterValues){
+      value(atomic_load_explicit(&s->input_peak_bits, memory_order_relaxed)),
+      value(atomic_load_explicit(&s->output_peak_bits, memory_order_relaxed)),
+      ob_dsp_reduction(s->dsp, 7), ob_dsp_reduction(s->dsp, 8),
+      value(atomic_load_explicit(&s->input_raw_peak_bits, memory_order_relaxed)),
+      value(atomic_load_explicit(&s->output_raw_peak_bits, memory_order_relaxed))};
 }
