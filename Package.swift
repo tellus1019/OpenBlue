@@ -4,7 +4,9 @@ import PackageDescription
 let package = Package(
   name: "OpenBlue",
   platforms: [.macOS(.v14)],
-  products: [.executable(name: "OpenBlue", targets: ["OpenBlue"])],
+  products: [
+    .library(name: "OpenBlueCore", targets: ["AudioCore", "Settings", "AudioClients", "AudioLifecycle"])
+  ],
   targets: [
     .target(
       name: "AudioCore", publicHeadersPath: "include",
@@ -12,7 +14,6 @@ let package = Package(
     .target(name: "Settings", dependencies: ["AudioCore"]),
     .target(name: "AudioClients"),
     .target(name: "AudioLifecycle"),
-    .executableTarget(name: "OpenBlue", dependencies: ["AudioCore", "Settings", "AudioClients", "AudioLifecycle"]),
     .testTarget(name: "AudioClientsTests", dependencies: ["AudioClients"]),
     .testTarget(name: "AudioLifecycleTests", dependencies: ["AudioLifecycle"]),
     .testTarget(name: "SettingsTests", dependencies: ["Settings"]),

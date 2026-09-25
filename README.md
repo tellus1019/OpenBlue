@@ -4,8 +4,9 @@ Its goal is local voice processing and a virtual microphone without Logitech G H
 
 ## Build and test
 
-An Apple Silicon Mac with Xcode and its command-line tools is required.
-The deployment minimum is macOS 14; current builds are checked with SDK 26.5.
+An Apple Silicon Mac with Xcode 26 or later and its command-line tools is required.
+The deployment minimum is macOS 14; current builds are checked with SDK 27.0.
+The app is built with the OpenBlue Xcode scheme; internal modules use local Swift packages.
 Compatibility with other OS versions has not been established.
 There are no external package dependencies.
 

@@ -672,7 +672,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     Window("OpenBlue", id: mainWindowID) {
       MainWindowContent(model: model, delegate: delegate)
     }.windowResizability(.contentSize)
-    MenuBarExtra("OpenBlue", systemImage: "mic") {
+    MenuBarExtra("OpenBlue", image: "MenuBarIcon") {
       Text(model.status)
       Toggle(
         "Enable OpenBlue", isOn: Binding(get: { model.enabled }, set: { model.setEnabled($0) }))
