@@ -64,10 +64,12 @@ not windows or browser tabs. Do not select its output for system playback:
 it is the feed into the virtual microphone, not a speaker.
 The virtual input supplies silence when no matching audio is available.
 
-Meters target 60 updates per second with one-frame linear interpolation.
-Their display-only peak envelope has immediate attack and a 200 dB/second
-release; numeric readouts update five times per second. These are level
-indicators, not calibrated loudness meters. Meter smoothing does not alter audio.
+While the processing window is visible, meter bars target 60 updates per second
+with three-frame linear interpolation in both directions. Input and output bars
+use the latest rendered block peaks; their numeric readouts use an immediate-attack,
+200 dB/second release envelope and update five times per second. Display polling
+stops when the window is not visible. These are level indicators, not calibrated
+loudness meters. Meter smoothing does not alter audio.
 
 ## Presets and recovery
 

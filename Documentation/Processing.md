@@ -56,8 +56,17 @@ and a 20 ms exponential decay before the gain envelope. Attack and release are
 the gain envelope's exponential time constants in dB, not the time to reach
 the final value. They do not remove all possible signal-dependent distortion.
 
-Enable and bypass changes blend over a 5 ms time constant, and filter
-coefficients follow a 10 ms time constant. Gain changes are smoothed as well.
+Individually disabled processors stop updating their processing state after
+fade-out, while the delay buffers continue advancing. Re-enabling a sleeping
+processor initializes it with the current settings and prepares it before
+fading in: 768 frames (16 ms) for noise reduction, 97 frames (about 2 ms) for
+the limiter, and 2400 frames (50 ms) for the other processors. During preparation,
+audio bypasses that processor without changing the fixed chain delay.
+
+Processor crossfades and whole-chain bypass changes use a 5 ms time constant.
+Coefficients of active filters follow a 10 ms time constant; waking filters
+start with the current coefficients. Gain changes are smoothed as well.
+Whole-chain bypass does not suspend processors that remain individually enabled.
 The audio callback receives a complete prepared snapshot at block boundaries.
 Audio histories clear on stop/start and input starvation; settings survive.
 Output resumes through the fixed delay after a discontinuity.
