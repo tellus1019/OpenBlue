@@ -141,19 +141,50 @@ static void limiter_ceiling_change(void) {
   ob_dsp_destroy(s);
   puts("PASS limiter bound during ceiling adjustment");
 }
+static void independent_gains(void) {
+  defaults(); config[OBP_COMP_PREGAIN] = 12; config[OBP_COMP_MAKEUP] = 6;
+  config[OBP_LIMIT_BOOST] = 20;
+  assert(fabs(transfer(0, .01)) < .01);
+  config[OBP_COMP_ON] = 1; config[OBP_COMP_RATIO] = 1;
+  assert(fabs(transfer(0, .01)-18) < .02);
+  config[OBP_COMP_RATIO] = 4; config[OBP_COMP_THRESHOLD] = -30;
+  // -40 + 12 = -28, inside the 6 dB knee: 25/12 * 0.75 dB reduction.
+  assert(fabs(transfer(0, .01)-(18-25.0/16)) < .03);
+  defaults(); config[OBP_LIMIT_ON] = 1; config[OBP_LIMIT_BOOST] = 20;
+  config[OBP_LIMIT_CEILING] = -6; config[OBP_OUTPUT_GAIN] = -12;
+  assert(fabs(transfer(0, .1)+(-2)) < .03); // -6 -12 -(-20) = +2 dB.
+  config[OBP_OUTPUT_MUTE] = 1;
+  OBDSP *s = create(); assert(level(s, 997, .1, SR) == 0);
+  config[OBP_BYPASS] = 1; assert(ob_dsp_update(s, config, OBP_COUNT));
+  assert(level(s, 997, .1, SR) == 0); ob_dsp_destroy(s);
+  defaults(); config[OBP_EQ_ON] = 1; config[OBP_EQ1_HZ] = 5; config[OBP_EQ1_DB] = 12;
+  assert(fabs(transfer(5, .01)-12) < .15);
+  for (unsigned attack = 0; attack <= 10; ++attack) {
+    defaults(); config[OBP_LIMIT_ON] = 1; config[OBP_LIMIT_ATTACK] = attack;
+    config[OBP_LIMIT_CEILING] = -12;
+    s = create(); (void)level(s, 0, .01, SR/4);
+    for (unsigned i = 0; i < 4096; ++i) {
+      float audio[] = {i%503 == 0 ? 8 : .01, i%499 == 0 ? -4 : -.005};
+      ob_dsp_process(s, audio, 1);
+      assert(fabsf(audio[0]) <= .25119f && fabsf(audio[1]) <= .25119f);
+    }
+    ob_dsp_destroy(s);
+  }
+  puts("PASS stage-local gains, post-limiter master/mute, 5 Hz EQ and limiter attack bounds");
+}
 static void band_processing(void) {
   defaults(); config[OBP_ESSER_ON]=1;
   config[OBP_ESSER_HZ]=3000; config[OBP_ESSER_THRESHOLD]=-30;
   config[OBP_ESSER_RANGE]=12; config[OBP_ESSER_ATTACK]=1;
-  assert(transfer(10000,.2)<-5);
+  assert(transfer(3000,.2)<-8);
   assert(fabs(transfer(200,.2))<.2);
-  assert(fabs(transfer(10000,.0001))<.1);
+  assert(fabs(transfer(3000,.0001))<.1);
   defaults(); config[OBP_POPPER_ON]=1;
   config[OBP_POPPER_HZ]=300; config[OBP_POPPER_THRESHOLD]=-30;
   config[OBP_POPPER_RANGE]=12; config[OBP_POPPER_ATTACK]=.1;
-  assert(transfer(50,.2)<-5);
+  assert(transfer(300,.2)<-8);
   assert(fabs(transfer(5000,.2))<.2);
-  assert(fabs(transfer(50,.0001))<.1);
+  assert(fabs(transfer(300,.0001))<.1);
   defaults(); config[OBP_POPPER_ON]=1;
   config[OBP_POPPER_HZ]=150; config[OBP_POPPER_THRESHOLD]=-40;
   config[OBP_POPPER_RANGE]=12; config[OBP_POPPER_ATTACK]=1;
@@ -166,13 +197,48 @@ static void band_processing(void) {
   assert(transfer(6000,.1)<=.01);
   puts("PASS de-esser/de-popper target bands and below-threshold preservation");
 }
+static void band_width(void) {
+  const unsigned enabled[] = {OBP_ESSER_ON, OBP_POPPER_ON};
+  const unsigned frequency[] = {OBP_ESSER_HZ, OBP_POPPER_HZ};
+  const unsigned width[] = {OBP_ESSER_Q, OBP_POPPER_Q};
+  const unsigned threshold[] = {OBP_ESSER_THRESHOLD, OBP_POPPER_THRESHOLD};
+  const unsigned range[] = {OBP_ESSER_RANGE, OBP_POPPER_RANGE};
+  const unsigned attack[] = {OBP_ESSER_ATTACK, OBP_POPPER_ATTACK};
+  for (unsigned stage = 0; stage < 2; ++stage) {
+    defaults(); config[enabled[stage]] = 1;
+    config[threshold[stage]] = -50; config[range[stage]] = 60;
+    config[attack[stage]] = 0;
+    for (unsigned edge = 0; edge < 2; ++edge) {
+      const OBParameterInfo *info = ob_parameter_info(frequency[stage]);
+      double center = edge ? info->maximum : info->minimum;
+      config[frequency[stage]] = center;
+      config[width[stage]] = .25;
+      double broad = transfer(center*.5, .1);
+      config[width[stage]] = 20;
+      double narrow = transfer(center*.5, .1);
+      assert(broad < narrow - 3 && narrow < .05);
+      // Center attenuation follows detected level, independently of bandwidth.
+      double attenuation = transfer(center, .1);
+      assert(attenuation < -29 && attenuation > -31);
+      config[range[stage]] = 6;
+      assert(fabs(transfer(center, .1)+6) < .2);
+      config[range[stage]] = 0;
+      assert(fabs(transfer(center, .1)) < .05);
+      config[range[stage]] = 60;
+      // Internal headroom may exceed full scale before the final limiter/clip.
+      // An overdriven center tone must still respect the full 60 dB range.
+      assert(fabs(transfer(center, 4)+60) < .3);
+    }
+  }
+  puts("PASS band-width endpoints, center attenuation and reduction limits");
+}
 static uint32_t noise_state=42;
 static float noise(void) {
   noise_state = 1664525*noise_state + 1013904223;
   return ((noise_state>>8)/8388608.0f - 1)*1.7320508076f;
 }
 static void noise_reduction(void) {
-  defaults(); config[OBP_NR_ON]=1; config[OBP_NR_FLOOR]=-40;
+  defaults(); config[OBP_NR_ON]=1; config[OBP_NR_BIAS]=3;
   config[OBP_NR_RANGE]=24;
   OBDSP *s=create();
   float block[512];
@@ -187,18 +253,18 @@ static void noise_reduction(void) {
   }
   double attenuation=10*log10(out/in);
   printf("Noise attenuation: %.3f dB\n",attenuation);
-  assert(attenuation < -20 && attenuation > -26);
+  assert(attenuation < -6 && attenuation > -26);
   ob_dsp_destroy(s);
-  config[OBP_NR_FLOOR]=-55;
+  config[OBP_NR_BIAS]=1;
   assert(fabs(transfer(1500,.2))<.2);
-  puts("PASS fixed-seed noise attenuation and strong tone preservation");
+  puts("PASS learned noise attenuation, attenuation bound and clean tonal startup");
 }
 typedef struct { OBDSP *s; _Atomic bool done; } Concurrent;
 static void *write_parameters(void *context) {
   Concurrent *c=context; float v[OBP_COUNT];
   for(unsigned i=0;i<OBP_COUNT;++i)v[i]=ob_parameter_info(i)->initial;
   for(unsigned update=0;update<20000;++update) {
-    v[OBP_INPUT_GAIN]=update%2 ? -6 : 6;
+    v[OBP_INPUT_GAIN]=update%2 ? 0 : 6;
     v[OBP_OUTPUT_GAIN]=-v[OBP_INPUT_GAIN];
     v[OBP_EQ_ON]=1;v[OBP_EQ1_HZ]=20+(update%480);
     assert(ob_dsp_update(c->s,v,OBP_COUNT));
@@ -223,7 +289,7 @@ static void updates(void) {
     ++count;
   }
   pthread_join(thread,NULL);
-  config[OBP_INPUT_GAIN]=12;config[OBP_OUTPUT_GAIN]=12;config[OBP_BYPASS]=1;
+  config[OBP_INPUT_GAIN]=12;config[OBP_OUTPUT_GAIN]=0;config[OBP_BYPASS]=1;
   config[OBP_HPF_ON]=config[OBP_NR_ON]=config[OBP_GATE_ON]=config[OBP_EQ_ON]=1;
   config[OBP_ESSER_ON]=config[OBP_POPPER_ON]=config[OBP_COMP_ON]=config[OBP_LIMIT_ON]=1;
   assert(ob_dsp_update(s,config,OBP_COUNT));
@@ -312,7 +378,16 @@ static void switching(void) {
 static void boundaries(void) {
   defaults(); OBDSP *s=create();float block[512];
   for(unsigned p=2;p<OBP_COUNT;++p) {
+    defaults();
     const OBParameterInfo *info=ob_parameter_info(p);
+    // Exercise numerical endpoints while their processor is actually running.
+    if (info->group > 0) {
+      for (unsigned i = 0; i < OBP_COUNT; ++i) {
+        const OBParameterInfo *other = ob_parameter_info(i);
+        if (other->group == info->group && other->kind == OB_PARAMETER_BOOLEAN)
+          config[i] = 1;
+      }
+    }
     for(unsigned edge=0;edge<2;++edge) {
       config[p]=edge ? info->maximum : info->minimum;
       assert(ob_dsp_update(s,config,OBP_COUNT));
@@ -324,6 +399,7 @@ static void boundaries(void) {
     }
     config[p]=info->initial;
   }
+  assert(ob_dsp_stats(s).invalid_samples == 0);
   memset(block,0,sizeof(block));block[0]=NAN;block[1]=INFINITY;
   ob_dsp_process(s,block,256);
   assert(ob_dsp_stats(s).invalid_samples==2);
@@ -335,7 +411,7 @@ static void block_meter_parity(void) {
   // Callback partitioning must not change audio or peak limiter reduction.
   defaults();
   config[OBP_LIMIT_CEILING] = -12;
-  config[OBP_NR_FLOOR] = -40;
+  config[OBP_NR_BIAS] = 3;
   config[OBP_COMP_THRESHOLD] = -30;
   OBDSP *blocked = create(), *single = create();
   const unsigned sizes[] = {48, 256, 511, 1};
@@ -372,6 +448,8 @@ static void block_meter_parity(void) {
 }
 int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "--concurrency")) { updates(); return 0; }
-  parity();gain_filters();dynamics();limiter_ceiling_change();band_processing();noise_reduction();updates();timing();gate_hold_release();switching();boundaries();block_meter_parity();
+  if (argc == 2 && !strcmp(argv[1], "--bands")) { band_processing(); band_width(); return 0; }
+  if (argc == 2 && !strcmp(argv[1], "--boundaries")) { boundaries(); return 0; }
+  parity();gain_filters();independent_gains();dynamics();limiter_ceiling_change();band_processing();band_width();noise_reduction();updates();timing();gate_hold_release();switching();boundaries();block_meter_parity();
   puts("PASS all DSP signal tests; no audio device opened");
 }

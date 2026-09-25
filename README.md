@@ -49,12 +49,14 @@ affect other Logitech peripherals.
 3. Open the installed application and explicitly enable OpenBlue. It requests
    microphone access, not access to Documents or other personal folders.
 4. Select **OpenBlue** as the microphone input in another application.
-5. Adjust input and output gain between -24 and +12 dB. Expand a processor
-   to adjust its parameters and use its switch to enable it. All new processors
-   start disabled. See [Processing controls](Documentation/Processing.md).
+5. Adjust **Input gain** from -24 to +12 dB and **Master output** from -80
+   to 0 dB. Master output and **Mute output** act after the limiter. Expand a
+   processor to adjust its parameters and switch it on or off. Factory presets
+   have individual settings; new user presets start with processors disabled.
+   See [Processing controls](Documentation/Processing.md).
 6. Use **Bypass all processing** to compare with the unprocessed signal.
-   The chain adds 608 frames (12.67 ms at 48 kHz), including when bypassed.
-   Bypass retains clock alignment, fixed delay, and final full-scale clipping.
+   Master output and mute remain active. The chain adds 992 frames (20.67 ms at
+   48 kHz), including bypass, and retains clock alignment and final clipping.
 7. Keep OpenBlue running. Closing the window leaves it in the menu bar;
    disabling or quitting it stops capture. It does not launch at login.
 
@@ -74,30 +76,41 @@ loudness meters. Meter smoothing does not alter audio.
 
 ## Presets and recovery
 
-Choose a preset above the processing controls. **New** starts with the default
-processing values; **Duplicate** copies every value from the selected preset.
-Enter a unique name and choose **Save**. **Rename** changes the selected name;
-**Delete** asks for confirmation and selects the first remaining preset.
-The last preset cannot be deleted.
+Choose a preset above the processing controls. The factory library includes
+**AM**, **Bass Boost**, **Broadcaster 1**, **Broadcaster 2**, **Classic Radio**,
+**Crisp and Warm**, **FM**, **High Voice - Loud**, **High Voice - Soft**,
+**Low Voice - Loud**, **Low Voice - Soft**, and **Warm and Vintage**.
+These use OpenBlue's processing; they do not reproduce G HUB's output exactly.
+The initial selection is **Broadcaster 1**.
 
-Edits to gain, bypass, and processor controls are saved automatically to the
-selected preset. Switching presets applies all of its processing values together
-without restarting the audio engine. The selected Yeti is shared by all presets.
+Factory originals cannot be overwritten, renamed, or deleted. Editing gain,
+bypass, or a processor first creates an editable user copy; further edits save
+to that copy automatically. **New** creates a user preset with default values
+and processors disabled. **Duplicate** copies the selected preset's values.
+Enter a unique name and choose **Save**. **Rename** and **Delete** apply to user
+presets; deletion asks for confirmation and selects **Broadcaster 1**.
 
-Presets, selection, and Yeti UID are saved atomically in
-`~/Library/Application Support/OpenBlue/settings.json`. Enable state is not
-persisted; every launch starts disabled. Schema 1 and schema 2 migrate to schema 3
-as a single **Current Settings** preset, preserving existing values and device
-selection. Schema-1 processors start disabled with output gain at 0 dB.
-The first save preserves the original bytes in `settings.json.schema1-backup`
-or `settings.json.schema2-backup` before writing schema 3.
+Switching presets applies all processing values together without restarting
+the audio engine. The selected Yeti is shared by all presets. User presets,
+factory selection and catalog revision, and Yeti UID are saved atomically in
+`~/Library/Application Support/OpenBlue/settings.json` using schema 4.
+Enable state is not persisted; every launch starts disabled.
 
-**Back Up** exports the entire preset library, selection, and device setting to
-a JSON file. **Restore** validates a backup before asking to replace the current
-library. It preserves the previous settings file as
+Valid schema 1, 2, and 3 settings reset their old test presets to **Broadcaster 1**
+and retain device selection. Before the first save, the original bytes are
+preserved in `settings.json.schema1-backup`, `settings.json.schema2-backup`, or
+`settings.json.schema3-backup`. User copies in schema 4 store their complete
+values and source revision independently of the factory originals.
+If that backup name already contains different data, the new backup gets a unique
+suffix so both originals remain available.
+
+**Back Up** exports the user preset library, selection, factory catalog revision,
+and device setting to JSON. **Restore** validates a backup before asking to
+replace the current library. It preserves the previous settings file as
 `settings.json.before-restore-<unique ID>.json`, then restores the backup and
 disables audio. Enable OpenBlue again when ready. Restore replaces the library;
-it does not merge presets. Legacy settings files can also be restored.
+it does not merge presets. Restoring legacy files performs the same preset
+reset described above. Unsupported catalog revisions are preserved as errors.
 
 Invalid or newer settings show an error and are not overwritten by ordinary
 saving. Use **Restore** to recover a known-good backup, or **Settings Folder** to

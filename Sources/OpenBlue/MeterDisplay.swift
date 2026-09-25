@@ -44,10 +44,14 @@ import SwiftUI
   let output = MeterValue()
   let compressor = MeterValue()
   let limiter = MeterValue()
+  let deEsser = MeterValue()
+  let dePopper = MeterValue()
   let inputReadout = MeterText("−∞ dBFS")
   let outputReadout = MeterText("−∞ dBFS")
   let compressorReadout = MeterText("0.0 dB")
   let limiterReadout = MeterText("0.0 dB")
+  let deEsserReadout = MeterText("0.0 dB")
+  let dePopperReadout = MeterText("0.0 dB")
   let diagnostics = MeterText()
 
   func updateLevels(_ values: OBMeterValues) {
@@ -55,6 +59,8 @@ import SwiftUI
     output.update(values.output_raw_peak)
     compressor.update(values.compressor_reduction)
     limiter.update(values.limiter_reduction)
+    deEsser.update(values.de_esser_reduction)
+    dePopper.update(values.de_popper_reduction)
   }
 
   func updateReadouts(_ values: OBMeterValues) {
@@ -62,6 +68,8 @@ import SwiftUI
     outputReadout.update(Self.peakText(values.output_peak))
     compressorReadout.update(String(format: "%.1f dB", values.compressor_reduction))
     limiterReadout.update(String(format: "%.1f dB", values.limiter_reduction))
+    deEsserReadout.update(String(format: "%.1f dB", values.de_esser_reduction))
+    dePopperReadout.update(String(format: "%.1f dB", values.de_popper_reduction))
   }
 
   func clearLevels() {
@@ -75,7 +83,7 @@ import SwiftUI
   }
 }
 
-private struct MeterReadout: View {
+struct MeterReadout: View {
   @ObservedObject var value: MeterText
   var body: some View { Text(value.text).monospacedDigit() }
 }
@@ -97,9 +105,10 @@ struct PeakMeterBar: View {
 
 struct ReductionMeterBar: View {
   let level: MeterValue
+  var band = false
 
   var body: some View {
-    NativeMeterBar(level: level, kind: .reduction)
+    NativeMeterBar(level: level, kind: band ? .bandReduction : .reduction)
       .frame(height: 6)
       .frame(maxWidth: .infinity)
       .accessibilityHidden(true)
@@ -107,7 +116,7 @@ struct ReductionMeterBar: View {
 }
 
 fileprivate enum MeterBarKind {
-  case peak, reduction
+  case peak, reduction, bandReduction
 }
 
 private struct NativeMeterBar: NSViewRepresentable {
@@ -191,6 +200,8 @@ fileprivate final class MeterBarView: NSView {
       nextFraction = CGFloat(max(0, min(1, (Double(20 * log10(max(value, 0.000001))) + 60) / 60)))
     case .reduction:
       nextFraction = CGFloat(max(0, min(1, Double(value) / 30)))
+    case .bandReduction:
+      nextFraction = CGFloat(max(0, min(1, Double(value) / 60)))
     }
     let nextClipped = kind == .peak && value >= 0.99
     guard fraction != nextFraction || clipped != nextClipped else { return }

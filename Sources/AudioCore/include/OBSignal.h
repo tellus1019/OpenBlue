@@ -10,6 +10,7 @@ typedef struct {
   float compressor_reduction, limiter_reduction;
   // Latest rendered block peaks without the display release envelope.
   float input_raw_peak, output_raw_peak;
+  float de_esser_reduction, de_popper_reduction;
 } OBMeterValues;
 typedef struct {
   // Display envelopes with immediate attack and 200 dB/s release, not raw block peaks.

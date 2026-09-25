@@ -188,9 +188,12 @@ OBSignalStats ob_signal_stats(OBSignal *s) {
 }
 OBMeterValues ob_signal_meters(OBSignal *s) {
   return (OBMeterValues){
-      value(atomic_load_explicit(&s->input_peak_bits, memory_order_relaxed)),
-      value(atomic_load_explicit(&s->output_peak_bits, memory_order_relaxed)),
-      ob_dsp_reduction(s->dsp, 7), ob_dsp_reduction(s->dsp, 8),
-      value(atomic_load_explicit(&s->input_raw_peak_bits, memory_order_relaxed)),
-      value(atomic_load_explicit(&s->output_raw_peak_bits, memory_order_relaxed))};
+      .input_peak = value(atomic_load_explicit(&s->input_peak_bits, memory_order_relaxed)),
+      .output_peak = value(atomic_load_explicit(&s->output_peak_bits, memory_order_relaxed)),
+      .compressor_reduction = ob_dsp_reduction(s->dsp, 7),
+      .limiter_reduction = ob_dsp_reduction(s->dsp, 8),
+      .input_raw_peak = value(atomic_load_explicit(&s->input_raw_peak_bits, memory_order_relaxed)),
+      .output_raw_peak = value(atomic_load_explicit(&s->output_raw_peak_bits, memory_order_relaxed)),
+      .de_esser_reduction = ob_dsp_reduction(s->dsp, 5),
+      .de_popper_reduction = ob_dsp_reduction(s->dsp, 6)};
 }

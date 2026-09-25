@@ -8,6 +8,10 @@ xcrun clang -std=c11 -O2 -Wall -Wextra -Werror \
     -framework Accelerate -o .build/tests/dsp
 .build/tests/dsp
 xcrun clang -std=c11 -O2 -Wall -Wextra -Werror \
+    -I Sources/AudioCore/include Sources/AudioCore/OBDSP.c Tests/DSPNoiseTests.c \
+    -framework Accelerate -o .build/tests/dsp-noise
+.build/tests/dsp-noise
+xcrun clang -std=c11 -O2 -Wall -Wextra -Werror \
     -I Sources/AudioCore/include Tests/DSPFFTTests.c \
     -framework Accelerate -o .build/tests/dsp-fft
 .build/tests/dsp-fft

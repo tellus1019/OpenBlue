@@ -73,6 +73,35 @@ static void gain(void) {
   ob_signal_destroy(s);
 }
 static OBLoopback ring;
+static void band_meters(void) {
+  for (unsigned stage = 0; stage < 2; ++stage) {
+    OBSignal *s = ob_signal_create();
+    float parameters[OBP_COUNT];
+    for (unsigned i = 0; i < OBP_COUNT; ++i) parameters[i] = ob_parameter_info(i)->initial;
+    parameters[stage ? OBP_POPPER_ON : OBP_ESSER_ON] = 1;
+    parameters[stage ? OBP_POPPER_THRESHOLD : OBP_ESSER_THRESHOLD] = -40;
+    assert(ob_signal_parameters(s, parameters, OBP_COUNT));
+    float in[512], out[512];
+    double hz = stage ? 150 : 6000;
+    for (unsigned b = 0; b < 220; ++b) {
+      for (unsigned i = 0; i < 256; ++i)
+        in[2*i] = in[2*i+1] = .2f*sin(2*M_PI*hz*(b*256+i)/48000);
+      assert(ob_signal_push(s, in, 256));
+      if (b >= 8) ob_signal_render(s, out, 256);
+    }
+    OBMeterValues meters = ob_signal_meters(s);
+    float active = stage ? meters.de_popper_reduction : meters.de_esser_reduction;
+    float inactive = stage ? meters.de_esser_reduction : meters.de_popper_reduction;
+    assert(active > 11.9f && active <= 12.001f && inactive == 0);
+    assert(meters.input_raw_peak > .19f && meters.output_raw_peak < .06f);
+    assert(meters.compressor_reduction == 0 && meters.limiter_reduction == 0);
+    ob_signal_reset(s);
+    meters = ob_signal_meters(s);
+    assert(meters.de_esser_reduction == 0 && meters.de_popper_reduction == 0);
+    ob_signal_destroy(s);
+  }
+  puts("PASS band reduction meter routing and reset");
+}
 static void meters(void) {
   OBSignal *s = ob_signal_create();
   float in[960], out[960];
@@ -187,9 +216,11 @@ static void *reader(void *unused) {
 }
 int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "--meters")) { meters(); return 0; }
+  if (argc == 2 && !strcmp(argv[1], "--band-meters")) { band_meters(); return 0; }
   if (argc == 2 && !strcmp(argv[1], "--starvation")) { starvation(); return 0; }
   gain();
   meters();
+  band_meters();
   loopback();
   starvation();
   ob_loop_clear(&ring);

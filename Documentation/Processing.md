@@ -6,66 +6,81 @@ behavior; they do not reproduce Logitech's undocumented internal processing.
 ## Signal path
 
 Input meter → input gain → high-pass filter → noise reduction → noise gate →
-three-band parametric EQ → de-esser → de-popper → compressor → output gain →
-limiter → full-scale clip → output meter.
+three-band parametric EQ → de-esser → de-popper → compressor pre gain →
+compression → compressor post gain → limiter boost → limiter → master output
+and mute → full-scale clip → output meter.
 
 Input gain is software gain. It does not move the Yeti's hardware gain control.
-The input meter reads before input gain, so increasing gain will not increase
-that meter. The output meter reads the final signal. Compressor and limiter
-reduction meters display attenuation in dB, excluding compressor makeup gain.
+The input meter reads before input gain. The output meter reads the final signal.
+Reduction meters show attenuation in dB, excluding independent gain controls.
+The band reduction meters show center-frequency attenuation; their detector
+curves show the selected frequency and width, not the current output spectrum.
 Numeric readouts target five updates per second.
 
-All new processors default to disabled. Each switch bypasses that processor;
-the whole-chain bypass also bypasses input and output gain. The chain retains
-608 frames (12.67 ms) of delay in every configuration, including bypass, to
-align transitions. Device, application, and clock-buffer delay is additional.
-Final clipping to ±1 remains active in bypass and is counted in diagnostics.
+A new user preset starts with all processors disabled. Factory presets have
+individual processing settings; the initial selection is Broadcaster 1.
+Each processor switch bypasses that processor and its associated gain controls.
+Whole-chain bypass skips input gain and all processors. Master output and mute
+remain active after bypass. The chain retains 992 frames (20.67 ms) of delay in
+every configuration to align transitions: 512 frames for spectral processing
+and 480 frames for limiter lookahead. Device and clock-buffer delay is additional.
+Final clipping to ±1 remains active and is counted in diagnostics.
 
 ## Behavior
 
 - **High-pass filter:** second-order Butterworth; frequency is the −3 dB point.
 - **Noise reduction:** 512-point spectral suppression with 256-frame hops.
-  Noise floor specifies broadband white-noise RMS level, not a peak-meter
-  threshold. It is fixed by the user; there is no automatic noise learning.
-  Bins near or below this floor are attenuated up to maximum reduction.
-  Strong spectral components are retained. Release controls recovery after
-  attenuation. Excessive floor or reduction can affect quiet speech and create
-  audible modulation; listening evaluation is required.
+  A two-pass minima-controlled estimator tracks noise separately in each bin,
+  excluding likely speech from its second smoother. A decision-directed Wiener
+  gain uses the estimated noise and speech presence, with time and frequency
+  smoothing. Stereo channels share the stronger bin's gain to preserve balance.
+  Sensitivity increases attenuation where speech is uncertain; Bias raises the
+  estimated noise power. Maximum reduction limits each bin's attenuation.
+  Release controls recovery, with faster recovery for likely speech onsets.
+  After reset, suppression stays off for 256 ms of spectral frames and ramps
+  in over the following 256 ms while noise statistics accumulate. Prominent
+  tonal components are protected, including some tonal noise. This is a
+  statistical suppressor, not speech recognition: strong reduction can affect
+  quiet speech, and nonstationary noise may remain.
 - **Noise gate:** linked stereo peak detector with 3 dB hysteresis. Attack
   opens the gate; hold and release delay and smooth closing. Maximum reduction
   sets the closed level. It is not necessarily absolute silence.
 - **Parametric EQ:** three peaking bands. Frequency is the center; gain boosts
   or cuts there. Higher Q narrows the affected band.
-- **De-esser:** reduces the high-pass component above the selected frequency
-  when that component exceeds threshold. Maximum reduction caps its attenuation.
-- **De-popper:** applies the same dynamic reduction to a low-pass component.
-  It responds to level, not speech recognition, and can affect low voices.
-  Both band processors have second-order Butterworth extraction filters;
-  the threshold refers to that filtered band, not the full-band input meter.
-  Audio attenuation uses a separate first-order complementary low/high split,
-  so recombining an attenuated target band does not boost steady-state gain.
-- **Compressor:** linked peak compression with a 6 dB soft knee. Ratio describes
-  the steady-state slope above the knee. Makeup gain follows compression.
-- **Limiter:** linked sample-peak limiting with 96 frames (2 ms) of lookahead.
-  It is not a true-peak limiter. Ceiling changes follow a 5 ms smoothed value.
-  Fully enabled limiting follows that changing ceiling; during enable/disable
-  crossfades the dry contribution can exceed it. Full-scale clipping remains.
+- **De-esser and de-popper:** a normalized band-pass detector controls dynamic
+  bell attenuation at the selected center frequency. Higher Q narrows both
+  detection and attenuation. Threshold refers to the filtered band, not the
+  input meter. Maximum reduction caps center-frequency attenuation. A
+  topology-preserving state-variable filter maintains unity gain when no
+  attenuation is required. These processors respond to level, not recognized
+  consonants, and can affect wanted speech in the selected band.
+- **Compressor:** linked peak compression with a 6 dB soft knee. Pre gain changes
+  the level entering both detector and audio processing; Post gain follows
+  compression. Ratio describes the steady-state slope above the knee.
+- **Limiter:** linked sample-peak limiting with 480 frames (10 ms) of lookahead.
+  Boost precedes detection and limiting. Attack selects a 0–10 ms advance window
+  and gain descent; zero gives immediate gain reduction. A final sample bound
+  enforces the ceiling when limiting is fully enabled. It is not a true-peak
+  limiter. Ceiling changes follow a 5 ms smoothed value. During enable/disable
+  crossfades the dry contribution can exceed the ceiling. Full-scale clipping
+  remains after Master output.
 
 Peak detectors for gate, compressor, and band reduction have instantaneous rise
-and a 20 ms exponential decay before the gain envelope. Attack and release are
-the gain envelope's exponential time constants in dB, not the time to reach
-the final value. They do not remove all possible signal-dependent distortion.
+and a 20 ms exponential decay before the gain envelope. Their attack and release
+are exponential time constants in dB; zero attack is instantaneous. They do not
+remove all possible signal-dependent distortion.
 
 Individually disabled processors stop updating their processing state after
-fade-out, while the delay buffers continue advancing. Re-enabling a sleeping
+fade-out, while delay buffers continue advancing. Re-enabling a sleeping
 processor initializes it with the current settings and prepares it before
-fading in: 768 frames (16 ms) for noise reduction, 97 frames (about 2 ms) for
-the limiter, and 2400 frames (50 ms) for the other processors. During preparation,
-audio bypasses that processor without changing the fixed chain delay.
+fading in: 768 frames (16 ms) for noise reduction, 481 frames (about 10 ms) for
+the limiter, and 2400 frames (50 ms) for the other processors. NR's statistics
+continue to accumulate during its subsequent suppression startup period.
+During preparation audio bypasses that processor without changing chain delay.
 
 Processor crossfades and whole-chain bypass changes use a 5 ms time constant.
-Coefficients of active filters follow a 10 ms time constant; waking filters
-start with the current coefficients. Gain changes are smoothed as well.
+Active filter coefficients follow a 10 ms time constant; waking filters start
+with current coefficients. Independent gain controls and mute are smoothed.
 Whole-chain bypass does not suspend processors that remain individually enabled.
 The audio callback receives a complete prepared snapshot at block boundaries.
 Audio histories clear on stop/start and input starvation; settings survive.
@@ -74,27 +89,29 @@ Output resumes through the fixed delay after a discontinuity.
 ## Parameter reference
 
 Ranges, defaults, and steps below match the shared DSP/UI parameter table.
-A switch uses 0 for disabled and 1 for enabled.
+These defaults apply to new user presets. A switch uses 0 for disabled and 1 for enabled.
 
 | Processor | Parameter | Unit | Minimum | Maximum | Default | Step |
 | --- | --- | --- | --- | --- | --- | --- |
 | Gain / bypass | Input gain | dB | -24 | 12 | 0 | 0.5 |
 | Gain / bypass | Bypass processing | switch | 0 | 1 | 0 | 1 |
-| Gain / bypass | Output gain | dB | -24 | 12 | 0 | 0.5 |
+| Gain / bypass | Master output | dB | -80 | 0 | 0 | 0.5 |
+| Gain / bypass | Mute output | switch | 0 | 1 | 0 | 1 |
 | HPF | High-pass filter | switch | 0 | 1 | 0 | 1 |
 | HPF | Frequency | Hz | 20 | 400 | 80 | 1 |
 | Noise reduction | Noise reduction | switch | 0 | 1 | 0 | 1 |
-| Noise reduction | Noise floor (RMS) | dBFS | -80 | -20 | -55 | 1 |
-| Noise reduction | Maximum reduction | dB | 0 | 40 | 12 | 1 |
-| Noise reduction | Release | ms | 20 | 1000 | 150 | 10 |
+| Noise reduction | Sensitivity | dB | 0 | 40 | 6 | 1 |
+| Noise reduction | Bias | dB | 0 | 5 | 1 | 0.25 |
+| Noise reduction | Maximum reduction | dB | 0 | 60 | 12 | 1 |
+| Noise reduction | Release | ms | 0 | 1000 | 150 | 10 |
 | Noise gate | Noise gate | switch | 0 | 1 | 0 | 1 |
 | Noise gate | Threshold | dBFS | -80 | -6 | -45 | 1 |
-| Noise gate | Attack | ms | 0.1 | 200 | 5 | 0.1 |
+| Noise gate | Attack | ms | 0 | 200 | 5 | 0.1 |
 | Noise gate | Hold | ms | 0 | 200 | 50 | 1 |
 | Noise gate | Release | ms | 10 | 1000 | 150 | 10 |
 | Noise gate | Maximum reduction | dB | 0 | 80 | 60 | 1 |
 | EQ | Parametric EQ | switch | 0 | 1 | 0 | 1 |
-| EQ | Low frequency | Hz | 20 | 500 | 200 | 1 |
+| EQ | Low frequency | Hz | 5 | 500 | 200 | 1 |
 | EQ | Low gain | dB | -12 | 12 | 0 | 0.5 |
 | EQ | Low Q | Q | 0.5 | 10 | 1 | 0.1 |
 | EQ | Mid frequency | Hz | 400 | 5000 | 1500 | 10 |
@@ -105,39 +122,53 @@ A switch uses 0 for disabled and 1 for enabled.
 | EQ | High Q | Q | 0.5 | 10 | 1 | 0.1 |
 | De-esser | De-esser | switch | 0 | 1 | 0 | 1 |
 | De-esser | Frequency | Hz | 1000 | 10000 | 6000 | 10 |
+| De-esser | Width | Q | 0.25 | 20 | 2 | 0.25 |
 | De-esser | Threshold | dBFS | -50 | 0 | -25 | 1 |
-| De-esser | Maximum reduction | dB | 0 | 30 | 12 | 1 |
-| De-esser | Attack | ms | 0.1 | 200 | 2 | 0.1 |
+| De-esser | Maximum reduction | dB | 0 | 60 | 12 | 1 |
+| De-esser | Attack | ms | 0 | 200 | 2 | 0.1 |
 | De-esser | Release | ms | 20 | 1000 | 100 | 10 |
 | De-popper | De-popper | switch | 0 | 1 | 0 | 1 |
 | De-popper | Frequency | Hz | 60 | 1000 | 150 | 1 |
+| De-popper | Width | Q | 0.25 | 20 | 1 | 0.25 |
 | De-popper | Threshold | dBFS | -50 | 0 | -25 | 1 |
-| De-popper | Maximum reduction | dB | 0 | 30 | 12 | 1 |
-| De-popper | Attack | ms | 0.1 | 200 | 1 | 0.1 |
+| De-popper | Maximum reduction | dB | 0 | 60 | 12 | 1 |
+| De-popper | Attack | ms | 0 | 200 | 1 | 0.1 |
 | De-popper | Release | ms | 20 | 1000 | 100 | 10 |
 | Compressor | Compressor | switch | 0 | 1 | 0 | 1 |
+| Compressor | Pre gain | dB | -12 | 12 | 0 | 0.5 |
 | Compressor | Threshold | dBFS | -40 | 0 | -18 | 1 |
 | Compressor | Ratio | :1 | 1 | 20 | 3 | 0.1 |
-| Compressor | Attack | ms | 0.1 | 200 | 10 | 0.1 |
+| Compressor | Attack | ms | 0 | 200 | 10 | 0.1 |
 | Compressor | Release | ms | 50 | 1000 | 250 | 10 |
-| Compressor | Makeup gain | dB | -12 | 12 | 0 | 0.5 |
+| Compressor | Post gain | dB | -12 | 12 | 0 | 0.5 |
 | Limiter | Limiter | switch | 0 | 1 | 0 | 1 |
+| Limiter | Boost | dB | -20 | 20 | 0 | 0.5 |
+| Limiter | Attack | ms | 0 | 10 | 2 | 0.1 |
 | Limiter | Ceiling | dBFS | -12 | 0 | -1 | 0.1 |
 | Limiter | Release | ms | 10 | 500 | 100 | 1 |
 
 ## Storage
 
-Settings use schema 3 to store named presets, the selected preset, and the
-shared Yeti UID atomically. Schema 1 and schema 2 migrate without losing their
-processing values or device selection; the original document is backed up
-before its first replacement. Invalid or unsupported documents are preserved.
-Backup exports the complete library. Restore validates the replacement and
-preserves the previous document before replacing it. Launch starts capture
-disabled.
+Schema 4 stores user presets, factory catalog revision, selection, and shared
+Yeti UID atomically. The 12 factory originals are bundled and cannot be renamed,
+deleted, or overwritten. The first parameter edit creates one editable user
+copy; subsequent edits update that copy. User copies retain their complete
+values and source factory ID/revision. Deleting a user preset selects
+Broadcaster 1. New and Duplicate explicitly create user presets.
+
+Valid schema 1–3 settings reset their legacy test presets to Broadcaster 1 and
+retain device selection. Their original bytes are backed up before replacement.
+If a migration backup already contains different data, a unique suffix preserves
+both originals rather than replacing the earlier backup.
+Invalid documents, newer schemas, and unsupported catalog revisions are preserved.
+Backup exports the user library and selection together with the catalog revision
+and device setting. Restore validates the replacement and preserves the previous
+document before replacing it. Launch and restore leave capture disabled.
 
 ## Implementation references
 
 - [W3C Audio EQ Cookbook](https://www.w3.org/TR/audio-eq-cookbook/)
-- [Faust filters library](https://faustlibraries.grame.fr/libs/filters/)
+- [Cytomic trapezoidal state-variable filter](https://cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf)
+- [Cohen, improved minima controlled recursive averaging](https://www.ee.technion.ac.il/Sites/People/IsraelCohen/Publications/SAP_Sep2003.pdf)
 - [Apple vDSP FFT](https://developer.apple.com/documentation/accelerate/vdsp_fft_zip)
 - [Apple Fourier transform guide](https://developer.apple.com/library/archive/documentation/Performance/Conceptual/vDSP_Programming_Guide/UsingFourierTransforms/UsingFourierTransforms.html)

@@ -44,7 +44,7 @@ static void suspended_audio(void) {
     }
   }
   // Delay rings advance while the expensive processing state stays untouched.
-  for (unsigned f = 0; f < 8; ++f)
+  for (unsigned f = 0; f < 6; ++f)
     for (unsigned ch = 0; ch < 2; ++ch)
       assert(s->filters[f].x1[ch] == 0 && s->filters[f].y1[ch] == 0);
   assert(s->gate_detector == 0 && s->comp_detector == 0 &&
@@ -113,7 +113,7 @@ static void preset_while_sleeping(void) {
   assert(ob_dsp_update(s, v, OBP_COUNT));
   dc(s, 12000);
   assert_sleeping(s);
-  Filter saved[8]; memcpy(saved, s->filters, sizeof(saved));
+  Filter saved[6]; memcpy(saved, s->filters, sizeof(saved));
   float spectrum[2][FFT_N/2]; memcpy(spectrum, s->real, sizeof(spectrum));
   float envelope = s->comp_detector;
   uint64_t queue = s->queue_tail;
@@ -129,7 +129,7 @@ static void preset_while_sleeping(void) {
   for (unsigned g = 1; g < OB_DSP_GROUPS; ++g) v[switches[g]] = 1;
   assert(ob_dsp_update(s, v, OBP_COUNT));
   dc(s, 1);
-  for (unsigned f = 0; f < 8; ++f)
+  for (unsigned f = 0; f < 6; ++f)
     assert(!memcmp(&s->filters[f].c, &s->slots[s->front].filters[f], sizeof(Coeff)));
   dc(s, 12000);
   for (unsigned g = 1; g < OB_DSP_GROUPS; ++g)

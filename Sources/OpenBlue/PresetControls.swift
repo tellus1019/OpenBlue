@@ -21,18 +21,25 @@ struct PresetControls: View {
         get: { model.settings.selectedPresetID },
         set: { id in _ = model.changePreset { try $0.selectPreset(id) } }
       )) {
-        ForEach(model.settings.presets) { preset in Text(preset.name).tag(preset.id) }
+        Section("Factory") {
+          ForEach(FactoryPresets.all) { factory in Text(factory.preset.name).tag(factory.preset.id) }
+        }
+        Section("User") {
+          ForEach(model.settings.userPresets) { preset in Text(preset.name).tag(preset.id) }
+        }
       }
       .disabled(model.settingsError != nil)
       HStack {
         Button("New…") { begin(.create) }
         Button("Duplicate…") { begin(.duplicate) }
-        Button("Rename…") { begin(.rename) }
+        Button("Rename…") { begin(.rename) }.disabled(model.settings.isFactorySelected)
         Button("Delete…", role: .destructive) { confirmingDelete = true }
-          .disabled(model.settings.presets.count == 1)
+          .disabled(model.settings.isFactorySelected)
       }.disabled(model.settingsError != nil)
       if model.settingsError == nil {
-        Text("Edits are saved automatically to the selected preset.")
+        Text(model.settings.isFactorySelected
+          ? "Editing creates a user copy. The factory preset stays unchanged."
+          : "Edits are saved automatically to the selected preset.")
           .font(.caption).foregroundStyle(.secondary)
       }
       HStack {
@@ -47,7 +54,7 @@ struct PresetControls: View {
       }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text("This removes the preset and switches to the first remaining preset.")
+      Text("This removes the preset and switches to Broadcaster 1.")
     }
     .sheet(item: $action) { selectedAction in
       VStack(alignment: .leading, spacing: 16) {

@@ -3,21 +3,23 @@
 #include <stdbool.h>
 #include <stdint.h>
 typedef enum {
-#define OB_PARAM(id, key, label, unit, group, lo, hi, initial, step) OBP_##id,
+#define OB_PARAM(id, key, label, unit, group, lo, hi, initial, step, kind) OBP_##id,
 #include "OBParameters.def"
 #undef OB_PARAM
   OBP_COUNT
 } OBDSPParameter;
+typedef enum { OB_PARAMETER_NUMBER, OB_PARAMETER_BOOLEAN, OB_PARAMETER_ENUM } OBParameterKind;
 typedef struct {
   const char *key, *label, *unit;
   uint32_t group;
   float minimum, maximum, initial, step;
+  OBParameterKind kind;
 } OBParameterInfo;
 const OBParameterInfo *ob_parameter_info(uint32_t index);
 uint32_t ob_parameter_count(void);
 bool ob_parameters_valid(const float *values, uint32_t count);
 
-enum { OB_DSP_LATENCY = 608, OB_DSP_GROUPS = 9 };
+enum { OB_DSP_LATENCY = 992, OB_DSP_GROUPS = 9 };
 typedef struct OBDSP OBDSP;
 typedef struct {
   float reduction_db[OB_DSP_GROUPS];
@@ -26,6 +28,7 @@ typedef struct {
 // One serialized control writer and one audio reader. Create/destroy/reset
 // only while stopped. Update prepares a complete snapshot outside audio.
 OBDSP *ob_dsp_create(void);
+uint32_t ob_dsp_latency_frames(void);
 void ob_dsp_destroy(OBDSP *dsp);
 void ob_dsp_reset(OBDSP *dsp);
 // Audio reader only: discard stream history after missing input, retaining

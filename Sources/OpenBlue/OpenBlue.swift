@@ -576,18 +576,12 @@ struct ContentView: View {
           ParameterSlider(
             value: Binding(
               get: { model.settings.gainDB },
-              set: {
-                model.settings.gainDB = $0
-                model.save()
-              }), bounds: -24...12, step: 0.5)
+              set: { value in _ = model.changePreset { $0.gainDB = value } }), bounds: -24...12, step: 0.5)
           Toggle(
             "Bypass all processing",
             isOn: Binding(
               get: { model.settings.bypass },
-              set: {
-                model.settings.bypass = $0
-                model.save()
-              }))
+              set: { value in _ = model.changePreset { $0.bypass = value } }))
         }.disabled(model.settingsError != nil)
         MeterPanel(display: model.meterDisplay)
         ProcessingEditor(model: model)
