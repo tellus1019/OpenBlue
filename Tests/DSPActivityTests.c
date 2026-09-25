@@ -140,8 +140,71 @@ static void preset_while_sleeping(void) {
   puts("PASS preset wake uses current parameters without advancing sleeping state");
 }
 
+static void compare_blocks(OBDSP *single, OBDSP *blocked, unsigned *sample,
+                           unsigned frames) {
+  const unsigned sizes[] = {48, 257, 511};
+  unsigned block = 0;
+  while (frames) {
+    unsigned count = sizes[block++ % 3];
+    if (count > frames) count = frames;
+    float audio[511*2], reference[511*2];
+    for (unsigned i = 0; i < count; ++i, ++*sample) {
+      float input[] = {.13f*sinf(*sample*.073f), .09f*cosf(*sample*.127f)};
+      memcpy(audio+2*i, input, sizeof(input));
+      ob_dsp_process(single, input, 1);
+      memcpy(reference+2*i, input, sizeof(input));
+    }
+    ob_dsp_process(blocked, audio, count);
+    for (unsigned i = 0; i < count*2; ++i) {
+      assert(isfinite(audio[i]) && isfinite(reference[i]));
+      assert(fabsf(audio[i]-reference[i]) < 1e-6f);
+    }
+    for (unsigned g = 1; g < OB_DSP_GROUPS; ++g) {
+      assert(single->active[g] == blocked->active[g]);
+      assert(single->preroll[g] == blocked->preroll[g]);
+      assert(single->mix[g] == blocked->mix[g]);
+    }
+    frames -= count;
+  }
+}
+
+static void block_partitioning(void) {
+  OBDSP *single = ob_dsp_create(), *blocked = ob_dsp_create();
+  assert(single && blocked);
+  float v[OBP_COUNT]; defaults(v);
+  unsigned sample = 0;
+  compare_blocks(single, blocked, &sample, 1024);
+  for (unsigned g = 1; g < OB_DSP_GROUPS; ++g) v[switches[g]] = 1;
+  assert(ob_dsp_update(single, v, OBP_COUNT));
+  assert(ob_dsp_update(blocked, v, OBP_COUNT));
+  compare_blocks(single, blocked, &sample, 12000);
+  // A running preset must leave steady processing and resume coefficient ramps.
+  v[OBP_HPF_HZ] = 400; v[OBP_EQ1_DB] = -6;
+  v[OBP_ESSER_HZ] = 3500; v[OBP_OUTPUT_GAIN] = -6;
+  assert(ob_dsp_update(single, v, OBP_COUNT));
+  assert(ob_dsp_update(blocked, v, OBP_COUNT));
+  compare_blocks(single, blocked, &sample, 24000);
+  // Fade completion and preparation must not move to a callback boundary.
+  v[OBP_NR_ON] = v[OBP_EQ_ON] = 0;
+  assert(ob_dsp_update(single, v, OBP_COUNT));
+  assert(ob_dsp_update(blocked, v, OBP_COUNT));
+  compare_blocks(single, blocked, &sample, 8192);
+  v[OBP_NR_ON] = v[OBP_EQ_ON] = 1;
+  assert(ob_dsp_update(single, v, OBP_COUNT));
+  assert(ob_dsp_update(blocked, v, OBP_COUNT));
+  compare_blocks(single, blocked, &sample, 12000);
+  for (unsigned g = 1; g < OB_DSP_GROUPS; ++g) v[switches[g]] = 0;
+  assert(ob_dsp_update(single, v, OBP_COUNT));
+  assert(ob_dsp_update(blocked, v, OBP_COUNT));
+  compare_blocks(single, blocked, &sample, 8192);
+  assert_sleeping(single); assert_sleeping(blocked);
+  ob_dsp_destroy(single); ob_dsp_destroy(blocked);
+  puts("PASS steady processing and transitions preserve audio across block sizes");
+}
+
 int main(void) {
   suspended_audio();
   wake_and_cancel();
   preset_while_sleeping();
+  block_partitioning();
 }
