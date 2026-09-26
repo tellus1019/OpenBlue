@@ -202,9 +202,40 @@ static void block_partitioning(void) {
   puts("PASS steady processing and transitions preserve audio across block sizes");
 }
 
+static void noise_learning_independence(void) {
+  OBDSP *mild = ob_dsp_create(), *strong = ob_dsp_create();
+  assert(mild && strong);
+  float v[OBP_COUNT]; defaults(v);
+  v[OBP_NR_ON] = 1; v[OBP_NR_BIAS] = 0; v[OBP_NR_RANGE] = 0;
+  assert(ob_dsp_update(mild, v, OBP_COUNT)); ob_dsp_reset(mild);
+  v[OBP_NR_BIAS] = 5; v[OBP_NR_SENSITIVITY] = 40; v[OBP_NR_RANGE] = 60;
+  assert(ob_dsp_update(strong, v, OBP_COUNT)); ob_dsp_reset(strong);
+  unsigned seed = 309;
+  float colored = 0;
+  for (unsigned block = 0; block < 600; ++block) {
+    float a[512], b[512];
+    for (unsigned i = 0; i < 256; ++i) {
+      seed = seed*1664525u + 1013904223u;
+      colored = .99f*colored + .01f*((seed>>8)/8388608.f-1);
+      float x = .1f*colored;
+      if (block >= 200 && block < 400)
+        x += .02f*sinf(2*M_PI*220*(block*256+i)/48000);
+      a[2*i] = a[2*i+1] = b[2*i] = b[2*i+1] = x;
+    }
+    ob_dsp_process(mild, a, 256); ob_dsp_process(strong, b, 256);
+    // Suppression controls may change the sound, but cannot teach the noise
+    // tracker a different background from identical input.
+    for (unsigned k = 0; k < NR_BINS; ++k)
+      assert(mild->noise.noise[k] == strong->noise.noise[k]);
+  }
+  ob_dsp_destroy(mild); ob_dsp_destroy(strong);
+  puts("PASS background learning is independent of suppression controls");
+}
+
 int main(void) {
   suspended_audio();
   wake_and_cancel();
   preset_while_sleeping();
   block_partitioning();
+  noise_learning_independence();
 }

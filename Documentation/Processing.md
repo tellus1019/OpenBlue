@@ -30,17 +30,23 @@ Final clipping to ±1 remains active and is counted in diagnostics.
 
 - **High-pass filter:** second-order Butterworth; frequency is the −3 dB point.
 - **Noise reduction:** 512-point spectral suppression with 256-frame hops.
-  A two-pass minima-controlled estimator tracks noise separately in each bin,
-  excluding likely speech from its second smoother. A decision-directed Wiener
-  gain uses the estimated noise and speech presence, with time and frequency
-  smoothing. Stereo channels share the stronger bin's gain to preserve balance.
+  Minima-controlled candidates initialize a separate noise estimate in each bin.
+  A fixed-prior speech-presence estimator then tracks background independently
+  of the suppression gain, with a bounded update during sustained high speech
+  probability. DC and Nyquist use real-valued likelihoods. A decision-directed
+  Wiener gain uses matched frequency averages of signal and noise power.
+  Onset protection also requires current-frame energy, so stale speech energy
+  cannot keep a bin open after a phrase ends. Gain smoothing and recovery vary
+  continuously with speech probability. Stereo channels share the stronger
+  bin's gain to preserve balance. Digital silence does not enter the noise statistics.
   Sensitivity increases attenuation where speech is uncertain; Bias raises the
-  estimated noise power. Maximum reduction limits each bin's attenuation.
+  estimated noise power for suppression without changing background learning.
+  Maximum reduction limits each bin's attenuation.
   Release controls recovery, with faster recovery for likely speech onsets.
-  After reset, suppression stays off for 256 ms of spectral frames and ramps
-  in over the following 256 ms while noise statistics accumulate. Prominent
-  tonal components are protected, including some tonal noise. This is a
-  statistical suppressor, not speech recognition: strong reduction can affect
+  After reset, suppression stays off for 256 ms of non-silent spectral frames
+  and ramps in over the following 256 ms while noise statistics accumulate.
+  Prominent tonal components are excluded from initialization, including some
+  tonal noise. This is a statistical suppressor, not speech recognition: strong reduction can affect
   quiet speech, and nonstationary noise may remain.
 - **Noise gate:** linked stereo peak detector with 3 dB hysteresis. Attack
   opens the gate; hold and release delay and smooth closing. Maximum reduction
@@ -170,5 +176,6 @@ document before replacing it. Launch and restore leave capture disabled.
 - [W3C Audio EQ Cookbook](https://www.w3.org/TR/audio-eq-cookbook/)
 - [Cytomic trapezoidal state-variable filter](https://cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf)
 - [Cohen, improved minima controlled recursive averaging](https://www.ee.technion.ac.il/Sites/People/IsraelCohen/Publications/SAP_Sep2003.pdf)
+- [Gerkmann and Hendriks, fixed-prior noise power estimation](https://www.inf.uni-hamburg.de/en/inst/ab/sp/publications/taslp12noisepsd.html)
 - [Apple vDSP FFT](https://developer.apple.com/documentation/accelerate/vdsp_fft_zip)
 - [Apple Fourier transform guide](https://developer.apple.com/library/archive/documentation/Performance/Conceptual/vDSP_Programming_Guide/UsingFourierTransforms/UsingFourierTransforms.html)

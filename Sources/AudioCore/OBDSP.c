@@ -287,9 +287,10 @@ static void spectral_frame(OBDSP *s, const Prepared *p) {
     unsigned left = k ? k-1 : k, right = k < FFT_N/2 ? k+1 : k;
     float target = .25f*s->noise.target[left] + .5f*s->noise.target[k]
                    + .25f*s->noise.target[right];
-    if (s->noise.speech[k] > .8f) target = fmaxf(target, s->noise.target[k]);
-    float a = target < s->spectral_gain[k] ? .3f :
-        (s->noise.speech[k] > .8f ? fminf(.2f, p->nr_release) : p->nr_release);
+    float presence = s->noise.speech[k]*s->noise.speech[k];
+    target += presence*fmaxf(0, s->noise.target[k]-target);
+    float recovery = p->nr_release + presence*(fminf(.2f, p->nr_release)-p->nr_release);
+    float a = target < s->spectral_gain[k] ? .3f : recovery;
     s->spectral_gain[k] = approach(s->spectral_gain[k], target, a);
     s->noise.previous_clean[k] = s->spectral_gain[k]*s->spectral_gain[k]*s->noise.power[k];
     for (unsigned ch = 0; ch < 2; ++ch) {
