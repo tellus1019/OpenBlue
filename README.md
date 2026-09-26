@@ -46,8 +46,10 @@ affect other Logitech peripherals.
 1. Connect the original Yeti through the standard macOS USB audio driver.
 2. Set its format to 48 kHz stereo in Audio MIDI Setup if needed. OpenBlue does
    not change the hardware format automatically.
-3. Open the installed application and explicitly enable OpenBlue. It requests
-   microphone access, not access to Documents or other personal folders.
+3. Open the installed application. OpenBlue starts enabled in the menu bar,
+   without a window or Dock icon. It requests microphone access, not access to
+   Documents or other personal folders. Choose **Show OpenBlue** from the menu
+   bar to display the processing window and Dock icon.
 4. Select **OpenBlue** as the microphone input in another application.
 5. Adjust **Input gain** from -24 to +12 dB and **Master output** from -80
    to 0 dB. Master output and **Mute output** act after the limiter. Expand a
@@ -57,8 +59,11 @@ affect other Logitech peripherals.
 6. Use **Bypass all processing** to compare with the unprocessed signal.
    Master output and mute remain active. The chain adds 992 frames (20.67 ms at
    48 kHz), including bypass, and retains clock alignment and final clipping.
-7. Keep OpenBlue running. Closing the window leaves it in the menu bar;
-   disabling or quitting it stops capture. It does not launch at login.
+7. Keep OpenBlue running. Closing the window also removes its Dock icon while
+   leaving it in the menu bar; disabling or quitting it stops capture. Turn on
+   **Launch at login** under **Startup** in the processing window to start it
+   automatically at login, without a window or Dock icon. This option is off
+   until registered; macOS may require approval in Login Items settings.
 
 Capture runs only when enabled and an external input process is using the virtual
 device. Activity comes from Core Audio process objects and input activity
@@ -94,7 +99,8 @@ Switching presets applies all processing values together without restarting
 the audio engine. The selected Yeti is shared by all presets. User presets,
 factory selection and catalog revision, and Yeti UID are saved atomically in
 `~/Library/Application Support/OpenBlue/settings.json` using schema 4.
-Enable state is not persisted; every launch starts disabled.
+Enable state is not persisted; every launch starts enabled, subject to microphone
+permission and valid settings.
 
 Valid schema 1, 2, and 3 settings reset their old test presets to **Broadcaster 1**
 and retain device selection. Before the first save, the original bytes are

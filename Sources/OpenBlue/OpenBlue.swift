@@ -322,6 +322,10 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
       status = "Allow OpenBlue in System Settings → Privacy & Security → Microphone"
     }
   }
+  func enableAtLaunch() {
+    guard !failed, settingsError == nil else { return }
+    setEnabled(true)
+  }
   func refresh() {
     let all = devices()
     availableYetis = all.filter(\.isYeti)
@@ -540,6 +544,7 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
 
 struct ContentView: View {
   @ObservedObject var model: AudioModel
+  let loginItem: LoginItemModel
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 22) {
@@ -585,6 +590,7 @@ struct ContentView: View {
         }.disabled(model.settingsError != nil)
         MeterPanel(display: model.meterDisplay)
         ProcessingEditor(model: model)
+        StartupSettings(loginItem: loginItem)
         Text(
           "Choose OpenBlue as the input in your recording or meeting app. Keep OpenBlue running. Audio stays on this Mac."
         )
@@ -595,50 +601,50 @@ struct ContentView: View {
   }
 }
 
-private let mainWindowID = "main"
-
-private struct MainWindowContent: View {
-  @Environment(\.openWindow) private var openWindow
-  let model: AudioModel
-  let delegate: AppDelegate
-
-  var body: some View {
-    ContentView(model: model)
-      .onAppear {
-        delegate.openMainWindow = { [openWindow] in
-          openWindow(id: mainWindowID)
-          NSApp.activate(ignoringOtherApps: true)
-        }
-      }
-  }
-}
-
-private struct ShowMainWindowButton: View {
-  @Environment(\.openWindow) private var openWindow
-
-  var body: some View {
-    Button("Show OpenBlue") {
-      openWindow(id: mainWindowID)
-      NSApp.activate(ignoringOtherApps: true)
-    }
-  }
-}
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-  var openMainWindow: (() -> Void)?
+  lazy var model = AudioModel()
+  private let loginItem = LoginItemModel()
+  private lazy var mainWindow = MainWindowController { [self] in
+    NSHostingView(rootView: ContentView(model: model, loginItem: loginItem))
+  }
+
+  func applicationDidFinishLaunching(_ notification: Notification) {
+    NSApp.setActivationPolicy(.accessory)
+    model.enableAtLaunch()
+  }
+
+  func showMainWindow() { mainWindow.show() }
+  func closeMainWindow() { mainWindow.window?.performClose(nil) }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-    guard let openMainWindow else { return true }
-    openMainWindow()
+    if mainWindow.window?.isVisible == true || mainWindow.window?.isMiniaturized == true {
+      showMainWindow()
+    }
     return false
+  }
+
+  func applicationWillTerminate(_ notification: Notification) { model.stopAudio() }
+}
+
+private struct StatusMenu: View {
+  @ObservedObject var model: AudioModel
+  let delegate: AppDelegate
+
+  var body: some View {
+    Text(model.status)
+    Toggle("Enable OpenBlue", isOn: Binding(
+      get: { model.enabled }, set: { model.setEnabled($0) }))
+      .disabled(model.settingsError != nil)
+    Button("Show OpenBlue") { delegate.showMainWindow() }
+    Divider()
+    Button("Quit OpenBlue") { NSApp.terminate(nil) }
   }
 }
 @main struct OpenBlueApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-  @StateObject private var model = AudioModel()
   init() {
     if CommandLine.arguments.contains("--inspect") {
       let processes = try? InputClients.snapshot()
@@ -663,18 +669,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
   }
   var body: some Scene {
-    Window("OpenBlue", id: mainWindowID) {
-      MainWindowContent(model: model, delegate: delegate)
-    }.windowResizability(.contentSize)
     MenuBarExtra("OpenBlue", image: "MenuBarIcon") {
-      Text(model.status)
-      Toggle(
-        "Enable OpenBlue", isOn: Binding(get: { model.enabled }, set: { model.setEnabled($0) }))
-      ShowMainWindowButton()
-      Divider()
-      Button("Quit OpenBlue") {
-        model.stopAudio()
-        NSApp.terminate(nil)
+      StatusMenu(model: delegate.model, delegate: delegate)
+    }
+    .commands {
+      CommandGroup(replacing: .newItem) {
+        Button("Close Window") { delegate.closeMainWindow() }
+          .keyboardShortcut("w", modifiers: .command)
       }
     }
   }
