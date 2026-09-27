@@ -65,16 +65,23 @@ public struct AudioSettings: Codable, Equatable, Sendable {
   public var deviceUID: String?
   public private(set) var userPresets: [Preset] = []
   public private(set) var selection: PresetSelection = .factory(FactoryPresets.initialID)
-  public var presets: [Preset] { FactoryPresets.all.map(\.preset) + userPresets }
+  public private(set) var factoryNoiseReductionModes: [String: NoiseReductionMode] = [:]
+  public var presets: [Preset] { FactoryPresets.all.map(resolvedFactoryPreset) + userPresets }
   public var isFactorySelected: Bool { if case .factory = selection { return true }; return false }
   public var selectedPreset: Preset {
     switch selection {
-    case .factory(let id): FactoryPresets.all.first { $0.id == id }!.preset
+    case .factory(let id): resolvedFactoryPreset(FactoryPresets.all.first { $0.id == id }!)
     case .user(let id): userPresets.first { $0.id == id }!
     }
   }
   public var selectedPresetID: UUID { selectedPreset.id }
   public init() {}
+
+  private func resolvedFactoryPreset(_ factory: FactoryPreset) -> Preset {
+    var preset = factory.preset
+    preset.noiseReductionMode = factoryNoiseReductionModes[factory.id] ?? preset.noiseReductionMode
+    return preset
+  }
 
   private mutating func editableIndex() -> Int {
     if case .user(let id) = selection { return userPresets.firstIndex { $0.id == id }! }
@@ -95,28 +102,49 @@ public struct AudioSettings: Codable, Equatable, Sendable {
   }
   public var gainDB: Float {
     get { selectedPreset.gainDB }
-    set { let index = editableIndex(); userPresets[index].gainDB = newValue }
+    set {
+      guard newValue != gainDB else { return }
+      let index = editableIndex(); userPresets[index].gainDB = newValue
+    }
   }
   public var bypass: Bool {
     get { selectedPreset.bypass }
-    set { let index = editableIndex(); userPresets[index].bypass = newValue }
+    set {
+      guard newValue != bypass else { return }
+      let index = editableIndex(); userPresets[index].bypass = newValue
+    }
   }
   public var processing: [String: Float] {
     get { selectedPreset.processing }
-    set { let index = editableIndex(); userPresets[index].processing = newValue }
+    set {
+      guard newValue != processing else { return }
+      let index = editableIndex(); userPresets[index].processing = newValue
+    }
   }
   public var noiseReductionMode: NoiseReductionMode {
     get { selectedPreset.noiseReductionMode }
-    set { let index = editableIndex(); userPresets[index].noiseReductionMode = newValue }
+    set {
+      guard newValue != noiseReductionMode else { return }
+      switch selection {
+      case .factory(let id):
+        let original = FactoryPresets.all.first { $0.id == id }!.preset.noiseReductionMode
+        factoryNoiseReductionModes[id] = newValue == original ? nil : newValue
+      case .user:
+        let index = editableIndex(); userPresets[index].noiseReductionMode = newValue
+      }
+    }
   }
   public var advancedReductionDB: Float {
     get { selectedPreset.advancedReductionDB }
-    set { let index = editableIndex(); userPresets[index].advancedReductionDB = newValue }
+    set {
+      guard newValue != advancedReductionDB else { return }
+      let index = editableIndex(); userPresets[index].advancedReductionDB = newValue
+    }
   }
   public var dspValues: [Float] { selectedPreset.dspValues }
 
   private enum CodingKeys: String, CodingKey {
-    case schemaVersion, deviceUID, userPresets, selection, factoryRevision
+    case schemaVersion, deviceUID, userPresets, selection, factoryRevision, factoryNoiseReductionModes
     case presets, selectedPresetID, gainDB, bypass, processing
   }
   public init(from decoder: Decoder) throws {
@@ -126,10 +154,12 @@ public struct AudioSettings: Codable, Equatable, Sendable {
     guard (1...4).contains(version) else { throw SettingsError.unsupportedVersion(version) }
     deviceUID = try c.decodeIfPresent(String.self, forKey: .deviceUID)
     if version == 4 {
-      guard try c.decode(Int.self, forKey: .factoryRevision) == FactoryPresets.revision
+      guard (1...FactoryPresets.revision).contains(try c.decode(Int.self, forKey: .factoryRevision))
       else { throw SettingsError.unsupportedCatalog }
       userPresets = try c.decode([Preset].self, forKey: .userPresets)
       selection = try c.decode(PresetSelection.self, forKey: .selection)
+      factoryNoiseReductionModes = try c.decodeIfPresent(
+        [String: NoiseReductionMode].self, forKey: .factoryNoiseReductionModes) ?? [:]
     } else if version == 3 {
       let old = try c.decode([LegacySettings.Value].self, forKey: .presets)
       let selected = try c.decode(UUID.self, forKey: .selectedPresetID)
@@ -154,11 +184,15 @@ public struct AudioSettings: Codable, Equatable, Sendable {
     try c.encode(userPresets, forKey: .userPresets)
     try c.encode(selection, forKey: .selection)
     try c.encode(FactoryPresets.revision, forKey: .factoryRevision)
+    try c.encode(factoryNoiseReductionModes, forKey: .factoryNoiseReductionModes)
   }
   public func validate() throws {
     guard schemaVersion == 4 else { throw SettingsError.unsupportedVersion(schemaVersion) }
+    guard Set(factoryNoiseReductionModes.keys).isSubset(of: Set(FactoryPresets.all.map(\.id)))
+    else { throw SettingsError.invalidPresets }
+    // Factory additions must not invalidate an existing user preset with the same name.
     guard Set(presets.map(\.id)).count == presets.count,
-      Set(presets.map { Self.nameKey($0.name) }).count == presets.count
+      Set(userPresets.map { Self.nameKey($0.name) }).count == userPresets.count
     else { throw SettingsError.invalidPresets }
     switch selection {
     case .factory(let id):

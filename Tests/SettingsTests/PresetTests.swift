@@ -60,7 +60,7 @@ final class PresetTests: XCTestCase {
         try original.write(to: store.url)
         let migrated = try store.load()
         XCTAssertEqual(migrated.schemaVersion, 4)
-        XCTAssertEqual(migrated.presets.count, 12)
+        XCTAssertEqual(migrated.presets.count, 13)
         XCTAssertEqual(migrated.selectedPreset.name, "Broadcaster 1")
         XCTAssertEqual(migrated.gainDB, 0)
         XCTAssertFalse(migrated.bypass)
@@ -121,11 +121,11 @@ final class PresetTests: XCTestCase {
 
   func testFactoryCatalogAndCopyOnFirstEdit() throws {
     var s = AudioSettings()
-    XCTAssertEqual(FactoryPresets.all.count, 12)
-    XCTAssertEqual(Set(FactoryPresets.all.map(\.id)).count, 12)
-    XCTAssertEqual(Set(FactoryPresets.all.map { $0.preset.id }).count, 12)
+    XCTAssertEqual(FactoryPresets.all.count, 13)
+    XCTAssertEqual(Set(FactoryPresets.all.map(\.id)).count, 13)
+    XCTAssertEqual(Set(FactoryPresets.all.map { $0.preset.id }).count, 13)
     XCTAssertEqual(Set(FactoryPresets.all.map { $0.preset.name }), Set([
-      "AM", "Bass Boost", "Broadcaster 1", "Broadcaster 2", "Classic Radio", "Crisp and Warm",
+      "Flat", "AM", "Bass Boost", "Broadcaster 1", "Broadcaster 2", "Classic Radio", "Crisp and Warm",
       "FM", "High Voice - Loud", "High Voice - Soft", "Low Voice - Loud", "Low Voice - Soft", "Warm and Vintage"
     ]))
     for factory in FactoryPresets.all {
@@ -150,6 +150,79 @@ final class PresetTests: XCTestCase {
     XCTAssertEqual(s.userPresets.count, 2)
     XCTAssertNotEqual(s.userPresets[0].name, s.userPresets[1].name)
     try s.validate()
+  }
+
+  func testFlatStartsUnprocessedAndCopiesOnlyWhenEdited() throws {
+    try withStore { store in
+      var settings = AudioSettings()
+      let flat = try XCTUnwrap(FactoryPresets.all.first { $0.id == "flat" })
+      try settings.selectPreset(flat.preset.id)
+      XCTAssertEqual(settings.userPresets.count, 0)
+      XCTAssertEqual(settings.gainDB, 0)
+      XCTAssertFalse(settings.bypass)
+      XCTAssertEqual(settings.processing["masterOutput"], 0)
+      XCTAssertEqual(settings.noiseReductionMode, .standard)
+      for parameter in ProcessingParameter.stored where parameter.isToggle {
+        XCTAssertEqual(settings.processing[parameter.key], 0, parameter.key)
+      }
+      try store.save(settings)
+      XCTAssertEqual(try store.load(), settings)
+      settings.processing["hpfEnabled"] = 1
+      XCTAssertEqual(settings.userPresets.count, 1)
+      XCTAssertEqual(settings.selectedPreset.sourceFactoryID, "flat")
+      XCTAssertEqual(settings.selectedPreset.sourceFactoryRevision, 2)
+      let copy = settings.selectedPreset
+      try settings.selectPreset(flat.preset.id)
+      XCTAssertEqual(settings.selectedPreset, flat.preset)
+      try settings.selectPreset(copy.id)
+      XCTAssertEqual(settings.processing["hpfEnabled"], 1)
+      try store.save(settings)
+      XCTAssertEqual(try store.load(), settings)
+    }
+  }
+
+  func testCatalogOnePreservesSettingsAndUserNamedFlat() throws {
+    try withStore { store in
+      var settings = AudioSettings()
+      settings.deviceUID = "saved-yeti"
+      settings.noiseReductionMode = .advanced
+      settings.gainDB = -4
+      let data = try JSONEncoder().encode(settings)
+      var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+      object["factoryRevision"] = 1
+      var users = try XCTUnwrap(object["userPresets"] as? [[String: Any]])
+      users[0]["name"] = "Flat"
+      users[0]["sourceFactoryRevision"] = 1
+      object["userPresets"] = users
+      let original = try JSONSerialization.data(withJSONObject: object)
+      try original.write(to: store.url)
+      let restored = try store.load()
+      XCTAssertEqual(restored.deviceUID, "saved-yeti")
+      XCTAssertEqual(restored.selection, settings.selection)
+      XCTAssertEqual(restored.selectedPreset.name, "Flat")
+      XCTAssertEqual(restored.selectedPreset.sourceFactoryRevision, 1)
+      XCTAssertEqual(restored.noiseReductionMode, .advanced)
+      XCTAssertEqual(restored.gainDB, -4)
+      XCTAssertEqual(restored.processing, settings.processing)
+      XCTAssertEqual(restored.userPresets.count, 1)
+      XCTAssertEqual(try Data(contentsOf: store.url), original)
+      try store.save(restored)
+      XCTAssertEqual(try store.load(), restored)
+      let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: store.url)) as? [String: Any])
+      XCTAssertEqual(saved["factoryRevision"] as? Int, 2)
+      object["userPresets"] = []
+      object["selection"] = ["factory": ["_0": "broadcaster-2"]]
+      try JSONSerialization.data(withJSONObject: object).write(to: store.url)
+      XCTAssertEqual(try store.load().selection, .factory("broadcaster-2"))
+      for unsupported in [0, 3] {
+        object["factoryRevision"] = unsupported
+        let invalid = try JSONSerialization.data(withJSONObject: object)
+        try invalid.write(to: store.url)
+        XCTAssertThrowsError(try store.load())
+        XCTAssertThrowsError(try store.save(restored))
+        XCTAssertEqual(try Data(contentsOf: store.url), invalid)
+      }
+    }
   }
 
   func testSchemaThreeResetAndMalformedPreservation() throws {

@@ -38,7 +38,7 @@ struct PresetControls: View {
       }.disabled(model.settingsError != nil)
       if model.settingsError == nil {
         Text(model.settings.isFactorySelected
-          ? "Editing creates a user copy. The factory preset stays unchanged."
+          ? "NR method changes keep this preset. Editing values or toggles creates a user copy."
           : "Edits are saved automatically to the selected preset.")
           .font(.caption).foregroundStyle(.secondary)
       }

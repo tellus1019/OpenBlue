@@ -114,10 +114,16 @@ it does not fall back to unprocessed audio. Histories clear on rebuild; settings
 survive. Standard mode clears its history and resumes through its fixed delay
 after input starvation.
 
-NR method and advanced maximum reduction belong to each preset. Existing schema 4
-presets without those fields load as Standard with an advanced maximum reduction
-of 40 dB. Factory originals remain Standard. Editing either setting on a factory
-preset creates a user copy. Switching presets within the same method updates
+Each preset holds separate Standard NR parameters and an Advanced maximum
+reduction. Factory presets use 40 dB for Advanced NR. Switching methods retains
+both sets of values and does not create a user copy or enable a disabled processor.
+The method choice is saved per preset; factory choices are stored separately from
+the immutable factory values. Changing a parameter or toggle on a factory preset
+creates a user copy with both sets of values and the current method.
+Existing schema 4 presets without NR fields load as Standard with an advanced
+maximum reduction of 40 dB. Missing factory method choices default to Standard;
+existing user presets retain their saved method and values.
+Switching presets within the same method updates
 parameters without rebuilding; switching between methods rebuilds the engine.
 Third-party notices are bundled under `ThirdPartyLicenses` and are accessible
 from **About OpenBlue → Third-Party Licenses** in a read-only, scrollable
@@ -187,12 +193,18 @@ These defaults apply to new user presets. A switch uses 0 for disabled and 1 for
 
 ## Storage
 
-Schema 4 stores user presets, factory catalog revision, selection, and shared
-Yeti UID atomically. The 12 factory originals are bundled and cannot be renamed,
+Schema 4 stores user presets, factory NR method choices, factory catalog revision,
+selection, and shared Yeti UID atomically. Backups include these method choices.
+The 13 factory originals are bundled and cannot be renamed,
 deleted, or overwritten. The first parameter edit creates one editable user
-copy; subsequent edits update that copy. User copies retain their complete
+copy; subsequent edits update that copy. Method selection and writes of unchanged
+values do not create copies. User copies retain their complete
 values and source factory ID/revision. Deleting a user preset selects
 Broadcaster 1. New and Duplicate explicitly create user presets.
+Flat provides an unprocessed starting point with all processors disabled, input
+and master output gains at 0 dB, and mute and bypass off.
+Catalog revision 2 adds Flat while retaining revision 1 settings, user presets,
+and selection. Existing user presets named Flat remain in the User group.
 
 Valid schema 1–3 settings reset their legacy test presets to Broadcaster 1 and
 retain device selection. Their original bytes are backed up before replacement.

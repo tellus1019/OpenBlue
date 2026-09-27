@@ -90,26 +90,33 @@ loudness meters. Meter smoothing does not alter audio.
 ## Presets and recovery
 
 Choose a preset above the processing controls. The factory library includes
-**AM**, **Bass Boost**, **Broadcaster 1**, **Broadcaster 2**, **Classic Radio**,
+**Flat**, **AM**, **Bass Boost**, **Broadcaster 1**, **Broadcaster 2**, **Classic Radio**,
 **Crisp and Warm**, **FM**, **High Voice - Loud**, **High Voice - Soft**,
 **Low Voice - Loud**, **Low Voice - Soft**, and **Warm and Vintage**.
-These use OpenBlue's processing; they do not reproduce G HUB's output exactly.
+Flat provides an unprocessed starting point: all processors are disabled, input
+and master output gains are 0 dB, and mute and bypass are off.
+The other presets use OpenBlue's processing; they do not reproduce G HUB's output exactly.
 The initial selection is **Broadcaster 1**.
 
-Factory originals cannot be overwritten, renamed, or deleted. Editing gain,
-bypass, or a processor first creates an editable user copy; further edits save
-to that copy automatically. **New** creates a user preset with default values
+Factory originals cannot be overwritten, renamed, or deleted. Changing a value
+or toggle first creates an editable user copy; further edits save to that copy
+automatically. Switching only the NR method retains the factory preset, and
+writing an unchanged value does not create a copy.
+**New** creates a user preset with default values
 and processors disabled. **Duplicate** copies the selected preset's values.
 Enter a unique name and choose **Save**. **Rename** and **Delete** apply to user
 presets; deletion asks for confirmation and selects **Broadcaster 1**.
 
 Switching presets within the same NR method updates processing without restarting
 the engine. Changing between Standard and Advanced rebuilds the audio path.
-The NR method and advanced maximum reduction are saved with each user preset;
-existing schema 4 presets without these fields retain their values and use
-Standard. Factory originals remain Standard. The selected Yeti is shared by all
-presets. User presets,
-factory selection and catalog revision, and Yeti UID are saved atomically in
+Each preset retains separate Standard NR parameters and an Advanced maximum
+reduction. Switching methods preserves both sets of values and does not enable
+a disabled processor. The selected method is remembered per preset, including
+factory presets. Existing schema 4 settings retain their user preset values;
+presets without a saved method use Standard. Factory presets use an Advanced
+maximum reduction of 40 dB. The selected Yeti is shared by all presets.
+User presets, factory NR method choices, selection, catalog revision, and Yeti
+UID are saved atomically in
 `~/Library/Application Support/OpenBlue/settings.json` using schema 4.
 Enable state is not persisted; every launch starts enabled, subject to microphone
 permission and valid settings.
@@ -122,8 +129,8 @@ values and source revision independently of the factory originals.
 If that backup name already contains different data, the new backup gets a unique
 suffix so both originals remain available.
 
-**Back Up** exports the user preset library, selection, factory catalog revision,
-and device setting to JSON. **Restore** validates a backup before asking to
+**Back Up** exports the user preset library, factory NR method choices, selection,
+factory catalog revision, and device setting to JSON. **Restore** validates a backup before asking to
 replace the current library. It preserves the previous settings file as
 `settings.json.before-restore-<unique ID>.json`, then restores the backup and
 disables audio. Enable OpenBlue again when ready. Restore replaces the library;

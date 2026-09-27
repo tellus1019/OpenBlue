@@ -6,9 +6,10 @@ public struct FactoryPreset: Identifiable, Sendable {
 }
 
 public enum FactoryPresets {
-  public static let revision = 1
+  public static let revision = 2
   public static let initialID = "broadcaster-1"
   public static let all: [FactoryPreset] = [
+    make("flat", "Flat", 13, [:]),
     make("am", "AM", 1, [
       "compressorAttack": 5,
       "compressorEnabled": 1,
@@ -651,6 +652,7 @@ public enum FactoryPresets {
                            _ values: [String: Float]) -> FactoryPreset {
     let id = UUID(uuidString: String(format: "FA000000-0000-4000-8000-%012X", index))!
     var preset = Preset(id: id, name: name)
+    preset.advancedReductionDB = 40
     preset.processing.merge(values) { _, new in new }
     return FactoryPreset(id: key, preset: preset)
   }
