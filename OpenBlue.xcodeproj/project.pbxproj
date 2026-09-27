@@ -5,6 +5,14 @@
 	};
 	"objectVersion" = 56;
 	"objects" = {
+		"A1F009000000000000000001" = { "isa" = "PBXFileReference"; "lastKnownFileType" = "sourcecode.swift"; "path" = "AboutWindow.swift"; "sourceTree" = "<group>"; };
+		"A1F009000000000000000002" = { "isa" = "PBXBuildFile"; "fileRef" = "A1F009000000000000000001"; };
+		"A1F008000000000000000001" = { "isa" = "PBXFileReference"; "lastKnownFileType" = "folder.mlpackage"; "path" = "Models/DPDFNet8.mlpackage"; "sourceTree" = "<group>"; };
+		"A1F008000000000000000101" = { "isa" = "PBXBuildFile"; "fileRef" = "A1F008000000000000000001"; };
+		"A1F008000000000000000002" = { "isa" = "PBXFileReference"; "lastKnownFileType" = "folder"; "path" = "Models/DPDFNet"; "sourceTree" = "<group>"; };
+		"A1F008000000000000000102" = { "isa" = "PBXBuildFile"; "fileRef" = "A1F008000000000000000002"; };
+		"A1F008000000000000000003" = { "isa" = "PBXFileReference"; "lastKnownFileType" = "folder"; "path" = "ThirdPartyLicenses"; "sourceTree" = "<group>"; };
+		"A1F008000000000000000103" = { "isa" = "PBXBuildFile"; "fileRef" = "A1F008000000000000000003"; };
 		"A1F006000000000000000001" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -79,6 +87,7 @@
 			"isa" = "PBXGroup";
 			"children" = (
 				"A1F006000000000000000001",
+				"A1F009000000000000000001",
 				"1854A4ECCAFD4184244C4E19",
 				"A996DA253425CCB054D898EB",
 				"556DE440668CCEF96C2CAF79",
@@ -113,6 +122,9 @@
 				"F8995BA5891B07E328C60D6B",
 				"3685E330EC5277A9DD5661C6",
 				"59BD0A3FF43B32849B319E64",
+				"A1F008000000000000000003",
+				"A1F008000000000000000002",
+				"A1F008000000000000000001",
 			);
 			"path" = "Resources";
 			"sourceTree" = "<group>";
@@ -159,6 +171,7 @@
 			"buildActionMask" = 2147483647;
 			"files" = (
 				"A1F006000000000000000002",
+				"A1F009000000000000000002",
 				"ADDB68660BBB3C64AE9AA895",
 				"57C3D700ECEF30F4D6A7EFA7",
 				"FAA4157A2756AF9B68E64AC9",
@@ -190,6 +203,9 @@
 			"files" = (
 				"1DDC606E1CEC2284028FC7A6",
 				"FB90684E69A6C96ED866993E",
+				"A1F008000000000000000103",
+				"A1F008000000000000000102",
+				"A1F008000000000000000101",
 			);
 			"runOnlyForDeploymentPostprocessing" = 0;
 		};
@@ -199,7 +215,7 @@
 				"ALWAYS_SEARCH_USER_PATHS" = "NO";
 				"ARCHS" = "arm64";
 				"CLANG_ENABLE_MODULES" = "YES";
-				"MACOSX_DEPLOYMENT_TARGET" = "14.0";
+				"MACOSX_DEPLOYMENT_TARGET" = "15.0";
 				"SDKROOT" = "macosx";
 				"SWIFT_VERSION" = "6.0";
 				"DEBUG_INFORMATION_FORMAT" = "dwarf";
@@ -236,7 +252,7 @@
 				"ALWAYS_SEARCH_USER_PATHS" = "NO";
 				"ARCHS" = "arm64";
 				"CLANG_ENABLE_MODULES" = "YES";
-				"MACOSX_DEPLOYMENT_TARGET" = "14.0";
+				"MACOSX_DEPLOYMENT_TARGET" = "15.0";
 				"SDKROOT" = "macosx";
 				"SWIFT_VERSION" = "6.0";
 				"DEBUG_INFORMATION_FORMAT" = "dwarf-with-dsym";

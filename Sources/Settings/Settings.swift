@@ -4,18 +4,40 @@ import OSLog
 
 private let settingsLog = Logger(subsystem: "org.openblue.app", category: "Settings")
 
+public enum NoiseReductionMode: String, Codable, CaseIterable, Sendable {
+  case standard, advanced
+}
+
 public struct Preset: Codable, Equatable, Sendable, Identifiable {
   public let id: UUID
   public var name: String
   public var gainDB: Float = 0
   public var bypass = false
   public var processing = ProcessingParameter.defaults
+  public var noiseReductionMode: NoiseReductionMode = .standard
+  public var advancedReductionDB: Float = 40
   public var sourceFactoryID: String?
   public var sourceFactoryRevision: Int?
 
   public init(id: UUID = UUID(), name: String) {
     self.id = id
     self.name = name
+  }
+  private enum CodingKeys: String, CodingKey {
+    case id, name, gainDB, bypass, processing, sourceFactoryID, sourceFactoryRevision
+    case noiseReductionMode, advancedReductionDB
+  }
+  public init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = try c.decode(UUID.self, forKey: .id)
+    name = try c.decode(String.self, forKey: .name)
+    gainDB = try c.decode(Float.self, forKey: .gainDB)
+    bypass = try c.decode(Bool.self, forKey: .bypass)
+    processing = try c.decode([String: Float].self, forKey: .processing)
+    sourceFactoryID = try c.decodeIfPresent(String.self, forKey: .sourceFactoryID)
+    sourceFactoryRevision = try c.decodeIfPresent(Int.self, forKey: .sourceFactoryRevision)
+    noiseReductionMode = try c.decodeIfPresent(NoiseReductionMode.self, forKey: .noiseReductionMode) ?? .standard
+    advancedReductionDB = try c.decodeIfPresent(Float.self, forKey: .advancedReductionDB) ?? 40
   }
   public var dspValues: [Float] {
     [gainDB, bypass ? 1 : 0] + ProcessingParameter.stored.map { processing[$0.key] ?? $0.initial }
@@ -25,6 +47,8 @@ public struct Preset: Codable, Equatable, Sendable, Identifiable {
       throw SettingsError.invalidPresetName
     }
     guard gainDB.isFinite, (-24...12).contains(gainDB) else { throw SettingsError.invalidGain }
+    guard advancedReductionDB.isFinite, (0...60).contains(advancedReductionDB)
+    else { throw SettingsError.invalidProcessing }
     guard Set(processing.keys) == Set(ProcessingParameter.defaults.keys),
       dspValues.withUnsafeBufferPointer({ ob_parameters_valid($0.baseAddress, UInt32($0.count)) })
     else { throw SettingsError.invalidProcessing }
@@ -61,6 +85,8 @@ public struct AudioSettings: Codable, Equatable, Sendable {
     }
     var copy = Preset(name: name)
     copy.gainDB = source.gainDB; copy.bypass = source.bypass; copy.processing = source.processing
+    copy.noiseReductionMode = source.noiseReductionMode
+    copy.advancedReductionDB = source.advancedReductionDB
     if case .factory(let id) = selection {
       copy.sourceFactoryID = id; copy.sourceFactoryRevision = FactoryPresets.revision
     }
@@ -78,6 +104,14 @@ public struct AudioSettings: Codable, Equatable, Sendable {
   public var processing: [String: Float] {
     get { selectedPreset.processing }
     set { let index = editableIndex(); userPresets[index].processing = newValue }
+  }
+  public var noiseReductionMode: NoiseReductionMode {
+    get { selectedPreset.noiseReductionMode }
+    set { let index = editableIndex(); userPresets[index].noiseReductionMode = newValue }
+  }
+  public var advancedReductionDB: Float {
+    get { selectedPreset.advancedReductionDB }
+    set { let index = editableIndex(); userPresets[index].advancedReductionDB = newValue }
   }
   public var dspValues: [Float] { selectedPreset.dspValues }
 
@@ -154,6 +188,8 @@ public struct AudioSettings: Codable, Equatable, Sendable {
     if duplicatingSelected {
       let source = selectedPreset
       preset.gainDB = gainDB; preset.bypass = bypass; preset.processing = processing
+      preset.noiseReductionMode = source.noiseReductionMode
+      preset.advancedReductionDB = source.advancedReductionDB
       if case .factory(let id) = selection {
         preset.sourceFactoryID = id; preset.sourceFactoryRevision = FactoryPresets.revision
       } else {

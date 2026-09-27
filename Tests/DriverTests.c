@@ -131,12 +131,12 @@ int main(void) {
                                           CFSTR("org.example.recorder")};
   assert(add_client(driver, DEVICE, &app) == 0 &&
          add_client(driver, DEVICE, &consumer) == 0);
-  assert(start(driver, DEVICE, 2) == 0 && atomic_load(&consumers) == 1);
-  assert(start(driver, DEVICE, 1) == 0 && atomic_load(&consumers) == 1);
+  assert(start(driver, DEVICE, 2) == 0 && atomic_load(&running) == 1);
+  assert(start(driver, DEVICE, 1) == 0 && atomic_load(&running) == 2);
   CFStringRef text = NULL;
   assert(get(driver, DEVICE, 10, &a, 0, NULL, sizeof(text), &actual, &text) ==
          0);
-  assert(CFEqual(text, CFSTR("1")));
+  assert(CFEqual(text, CFSTR("2")));
   CFRelease(text);
   float input[512], output[512];
   for (unsigned i = 0; i < 512; ++i)
@@ -149,11 +149,11 @@ int main(void) {
   assert(io(driver, DEVICE, INPUT, 2, kAudioServerPlugInIOOperationReadInput,
             256, &cycle, output, NULL) == 0);
   assert(memcmp(input, output, sizeof(input)) == 0);
-  assert(stop(driver, DEVICE, 2) == 0 && atomic_load(&consumers) == 0);
+  assert(stop(driver, DEVICE, 2) == 0 && atomic_load(&running) == 1);
   assert(stop(driver, DEVICE, 1) == 0 && atomic_load(&running) == 0);
   assert(remove_client(driver, DEVICE, &app) == 0 &&
          remove_client(driver, DEVICE, &consumer) == 0);
-  assert(notifications == 4);
+  assert(notifications == 6);
   // Two distinct host clients must remain independent in either start order.
   AudioServerPlugInClientInfo second = {3, 789, true,
                                         CFSTR("org.example.browser")};
@@ -165,17 +165,42 @@ int main(void) {
     assert(start(driver, DEVICE, first) == 0);
     assert(start(driver, DEVICE, 1) == 0);
     assert(start(driver, DEVICE, last) == 0);
-    assert(atomic_load(&consumers) == 2);
+    assert(atomic_load(&running) == 3);
     assert(stop(driver, DEVICE, first) == 0);
-    assert(atomic_load(&consumers) == 1);
     assert(atomic_load(&running) == 2);
     assert(stop(driver, DEVICE, last) == 0);
-    assert(atomic_load(&consumers) == 0);
+    assert(atomic_load(&running) == 1);
     assert(stop(driver, DEVICE, 1) == 0);
     assert(remove_client(driver, DEVICE, &app) == 0);
     assert(remove_client(driver, DEVICE, &consumer) == 0);
     assert(remove_client(driver, DEVICE, &second) == 0);
   }
+  // Registration removal does not stop host I/O. A later StopIO may refer
+  // to a retired registration or the host, while another recording starts.
+  assert(add_client(driver, DEVICE, &consumer) == noErr);
+  assert(start(driver, DEVICE, consumer.mClientID) == noErr);
+  UInt64 first_seed = atomic_load(&seed);
+  assert(start(driver, DEVICE, consumer.mClientID) == noErr);
+  assert(atomic_load(&running) == 2 && atomic_load(&seed) == first_seed);
+  assert(remove_client(driver, DEVICE, &consumer) == noErr);
+  assert(atomic_load(&running) == 2);
+  assert(stop(driver, DEVICE, kAudioServerPlugInHostClientID) == noErr);
+  assert(atomic_load(&running) == 1);
+  assert(stop(driver, DEVICE, consumer.mClientID) == noErr);
+  assert(atomic_load(&running) == 0);
+  for (unsigned session = 0; session < 3; ++session) {
+    assert(add_client(driver, DEVICE, &consumer) == noErr);
+    assert(start(driver, DEVICE, kAudioServerPlugInHostClientID) == noErr);
+    assert(atomic_load(&running) == 1);
+    assert(stop(driver, DEVICE, kAudioServerPlugInHostClientID) == noErr);
+    assert(remove_client(driver, DEVICE, &consumer) == noErr);
+    assert(atomic_load(&running) == 0);
+  }
+  assert(stop(driver, DEVICE, kAudioServerPlugInHostClientID) == kAudioHardwareIllegalOperationError);
+  atomic_store(&running, UINT32_MAX);
+  assert(start(driver, DEVICE, kAudioServerPlugInHostClientID) == kAudioHardwareIllegalOperationError);
+  assert(atomic_load(&running) == UINT32_MAX);
+  atomic_store(&running, 0);
   puts("PASS driver interface, custom property contract, client lifecycle and "
        "audio I/O");
 }

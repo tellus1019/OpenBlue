@@ -15,7 +15,7 @@ mkdir -p "$destination/OpenBlue.driver/Contents/MacOS"
 cp Resources/Driver-Info.plist "$destination/OpenBlue.driver/Contents/Info.plist"
 optimization=-O0
 if [ "$configuration" = release ]; then optimization=-O2; fi
-xcrun clang -std=c11 "$optimization" -g -arch arm64 -mmacosx-version-min=14.0 \
+xcrun clang -std=c11 "$optimization" -g -arch arm64 -mmacosx-version-min=15.0 \
     -Wall -Wextra -Werror -Wno-unused-parameter -fvisibility=hidden -bundle \
     Driver/OpenBlueDriver.c -framework CoreAudio -framework CoreFoundation \
     -o "$destination/OpenBlue.driver/Contents/MacOS/OpenBlueDriver"

@@ -20,15 +20,9 @@ static _Atomic uint32_t references = 1;
 static pthread_mutex_t state = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t anchor, seed;
 static double ticks_per_frame;
-static _Atomic uint32_t running, consumers;
+static _Atomic uint32_t running;
 static _Atomic bool input_active = true, output_active = true;
 static OBLoopback loop;
-typedef struct Client {
-  UInt32 id;
-  bool writer, active;
-  struct Client *next;
-} Client;
-static Client *clients;
 
 static bool valid(AudioServerPlugInDriverRef d) { return d == driver; }
 static bool object(AudioObjectID o) { return o >= PLUGIN && o <= OUTPUT; }
@@ -243,7 +237,7 @@ specific:
       if (capacity < sizeof(CFStringRef) || !out)
         return kAudioHardwareBadPropertySizeError;
       CFStringRef value = CFStringCreateWithFormat(NULL, NULL, CFSTR("%u"),
-                                                   atomic_load(&consumers));
+                                                   atomic_load(&running));
       if (!value)
         return kAudioHardwareUnspecifiedError;
       *(CFStringRef *)out = value;
@@ -339,59 +333,15 @@ static void running_changed(void) {
     host->PropertiesChanged(host, DEVICE, 1, &a);
   }
 }
+// Client registration and device I/O have separate lifetimes. HAL may aggregate
+// I/O requests; removing a registration must not consume a pending StopIO.
 static OSStatus add_client(AudioServerPlugInDriverRef d, AudioObjectID o,
                            const AudioServerPlugInClientInfo *info) {
-  if (!valid(d) || o != DEVICE || !info)
-    return kAudioHardwareBadObjectError;
-  Client *c = calloc(1, sizeof(*c));
-  if (!c)
-    return kAudioHardwareUnspecifiedError;
-  c->id = info->mClientID;
-  c->writer =
-      info->mBundleID && CFEqual(info->mBundleID, CFSTR("org.openblue.app"));
-  pthread_mutex_lock(&state);
-  for (Client *p = clients; p; p = p->next)
-    if (p->id == c->id) {
-      pthread_mutex_unlock(&state);
-      free(c);
-      return kAudioHardwareIllegalOperationError;
-    }
-  c->next = clients;
-  clients = c;
-  pthread_mutex_unlock(&state);
-  return noErr;
+  return valid(d) && o == DEVICE && info ? noErr : kAudioHardwareBadObjectError;
 }
 static OSStatus remove_client(AudioServerPlugInDriverRef d, AudioObjectID o,
                               const AudioServerPlugInClientInfo *info) {
-  if (!valid(d) || o != DEVICE || !info)
-    return kAudioHardwareBadObjectError;
-  bool notify = false;
-  pthread_mutex_lock(&state);
-  bool was_running = atomic_load(&running) > 0;
-  Client **link = &clients;
-  while (*link) {
-    Client *c = *link;
-    if (c->id == info->mClientID) {
-      if (c->active) {
-        atomic_fetch_sub(&running, 1);
-        if (!c->writer) {
-          atomic_fetch_sub(&consumers, 1);
-          notify = true;
-        }
-      }
-      *link = c->next;
-      free(c);
-      break;
-    }
-    link = &c->next;
-  }
-  bool running_change = was_running != (atomic_load(&running) > 0);
-  pthread_mutex_unlock(&state);
-  if (notify)
-    changed();
-  if (running_change)
-    running_changed();
-  return noErr;
+  return valid(d) && o == DEVICE && info ? noErr : kAudioHardwareBadObjectError;
 }
 static OSStatus config(AudioServerPlugInDriverRef d, AudioObjectID o,
                        UInt64 action, void *info) {
@@ -464,34 +414,23 @@ static OSStatus start_stop(AudioServerPlugInDriverRef d, AudioObjectID o,
   if (!valid(d) || o != DEVICE)
     return kAudioHardwareBadObjectError;
   pthread_mutex_lock(&state);
-  Client *c = clients;
-  while (c && c->id != id)
-    c = c->next;
-  if (!c || c->active == start) {
+  uint32_t count = atomic_load(&running);
+  if ((start && count == UINT32_MAX) || (!start && count == 0)) {
     pthread_mutex_unlock(&state);
     return kAudioHardwareIllegalOperationError;
   }
-  bool was_running = atomic_load(&running) > 0;
-  if (start) {
-    if (atomic_load(&running) == 0) {
-      ob_loop_clear(&loop);
-      atomic_store(&anchor, mach_absolute_time());
-      atomic_fetch_add(&seed, 1);
-    }
-    atomic_fetch_add(&running, 1);
-    if (!c->writer)
-      atomic_fetch_add(&consumers, 1);
-  } else {
-    atomic_fetch_sub(&running, 1);
-    if (!c->writer)
-      atomic_fetch_sub(&consumers, 1);
+  // Match the host's balanced StartIO/StopIO calls, including requests made on
+  // its own behalf. A client ID is not a unique active I/O session identifier.
+  if (start && count == 0) {
+    ob_loop_clear(&loop);
+    atomic_store(&anchor, mach_absolute_time());
+    atomic_fetch_add(&seed, 1);
   }
-  c->active = start;
-  bool notify = !c->writer;
-  bool running_change = was_running != (atomic_load(&running) > 0);
+  uint32_t next = start ? count + 1 : count - 1;
+  atomic_store(&running, next);
+  bool running_change = (count == 0) != (next == 0);
   pthread_mutex_unlock(&state);
-  if (notify)
-    changed();
+  changed();
   if (running_change)
     running_changed();
   return noErr;

@@ -2,6 +2,7 @@
 #define OB_ENGINE_H
 #include "OBSignal.h"
 #include <CoreAudio/CoreAudio.h>
+enum { OB_ADVANCED_NR_ERROR = -70001 };
 enum { OB_CALLBACK_BUCKETS = 128, OB_CALLBACK_BUCKET_US = 1 };
 typedef struct OBEngine OBEngine;
 typedef struct {
@@ -24,6 +25,10 @@ typedef struct {
 // state.
 OBEngine *ob_engine_create(AudioDeviceID input, AudioDeviceID output,
                            OSStatus *error);
+// Attach before starting. Rebuild the engine when the mode changes.
+bool ob_engine_advanced(OBEngine *engine, OBAdvancedNR processor);
+bool ob_engine_processing(OBEngine *engine, const float *values, uint32_t count, float decibels);
+uint32_t ob_engine_latency(OBEngine *engine);
 OSStatus ob_engine_start(OBEngine *engine);
 void ob_engine_destroy(OBEngine *engine);
 void ob_engine_gain(OBEngine *engine, float db, bool bypass);

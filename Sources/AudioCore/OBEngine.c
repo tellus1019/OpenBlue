@@ -9,6 +9,7 @@ enum { MAX_FRAMES = 8192 };
 struct OBEngine {
   AudioUnit input, output;
   OBSignal *signal;
+  uint32_t output_frames;
   float capture[MAX_FRAMES * 2];
   _Atomic int32_t error;
   _Atomic uint64_t callback_max_ticks;
@@ -200,6 +201,13 @@ OBEngine *ob_engine_create(AudioDeviceID input, AudioDeviceID output,
     e->ticks_per_bucket = (uint64_t)OB_CALLBACK_BUCKET_US * 1000 *
                           timebase.denom / timebase.numer;
   }
+  AudioObjectPropertyAddress buffer_address = {
+    kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal,
+    kAudioObjectPropertyElementMain};
+  UInt32 buffer_size = sizeof(e->output_frames);
+  if (AudioObjectGetPropertyData(output, &buffer_address, 0, NULL,
+                                &buffer_size, &e->output_frames) != noErr)
+    e->output_frames = 0;
   *error = setup(e, &e->input, input, true);
   if (!*error)
     *error = setup(e, &e->output, output, false);
@@ -244,7 +252,8 @@ void ob_engine_set_profiling(OBEngine *e, bool enabled) {
   e->profiling = enabled;
 }
 OSStatus ob_engine_error(OBEngine *e) {
-  return atomic_load_explicit(&e->error, memory_order_relaxed);
+  OSStatus result = atomic_load_explicit(&e->error, memory_order_relaxed);
+  return result ? result : ob_signal_failed(e->signal) ? OB_ADVANCED_NR_ERROR : noErr;
 }
 OBMeterValues ob_engine_meters(OBEngine *e) {
   return ob_signal_meters(e->signal);
@@ -259,7 +268,7 @@ OBEngineDiagnostics ob_engine_diagnostics(OBEngine *e) {
 OBEngineStats ob_engine_stats(OBEngine *e) {
   OBEngineStats stats = {0};
   stats.signal = ob_signal_stats(e->signal);
-  stats.error = atomic_load(&e->error);
+  stats.error = ob_engine_error(e);
   stats.callback_max_ticks = atomic_load(&e->callback_max_ticks);
   stats.captured_frames = atomic_load(&e->captured_frames);
   stats.render_frames = atomic_load(&e->render_frames);
@@ -276,3 +285,11 @@ OBEngineStats ob_engine_stats(OBEngine *e) {
         atomic_load(&e->output_duration_buckets[i]);
   return stats;
 }
+
+bool ob_engine_advanced(OBEngine *e, OBAdvancedNR processor) {
+  return ob_signal_advanced(e->signal, processor, e->output_frames);
+}
+bool ob_engine_processing(OBEngine *e, const float *v, uint32_t n, float db) {
+  return ob_signal_processing(e->signal, v, n, db);
+}
+uint32_t ob_engine_latency(OBEngine *e) { return ob_signal_latency(e->signal); }

@@ -1,4 +1,5 @@
 #include "OBSignal.h"
+#include "OBWorker.h"
 #include <math.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -19,6 +20,7 @@ struct OBSignal {
   _Atomic uint32_t input_peak_bits, output_peak_bits, fill;
   _Atomic uint32_t input_raw_peak_bits, output_raw_peak_bits;
   OBDSP *dsp;
+  OBWorker *worker;
   float parameters[OBP_COUNT];
   double position;
   float input_meter, output_meter;
@@ -61,10 +63,13 @@ OBSignal *ob_signal_create(void) {
 }
 void ob_signal_destroy(OBSignal *s) {
   if (!s) return;
+  ob_worker_destroy(s->worker);
   ob_dsp_destroy(s->dsp);
   free(s);
 }
 void ob_signal_reset(OBSignal *s) {
+  // Advanced mode owns DSP on a worker; recovery must rebuild the whole path.
+  if (s->worker) { ob_worker_fail(s->worker); return; }
   atomic_store(&s->written, 0);
   atomic_store(&s->released, 0);
   atomic_store(&s->underruns, 0);
@@ -141,7 +146,8 @@ void ob_signal_render(OBSignal *s, float *out, uint32_t n) {
   if (s->position + n * ratio + 17 >= w) {
     atomic_fetch_add_explicit(&s->underruns, 1, memory_order_relaxed);
     s->primed = false;
-    ob_dsp_discontinuity(s->dsp);
+    if (s->worker) ob_worker_fail(s->worker);
+    else ob_dsp_discontinuity(s->dsp);
     atomic_store_explicit(&s->released, w > TAPS ? w - TAPS : 0,
                           memory_order_release);
     publish_meters(s, 0, 0, n);
@@ -162,7 +168,8 @@ void ob_signal_render(OBSignal *s, float *out, uint32_t n) {
     }
     s->position += ratio;
   }
-  ob_dsp_process(s->dsp, out, n);
+  if (s->worker) ob_worker_process(s->worker, out, n);
+  else ob_dsp_process(s->dsp, out, n);
   for (uint32_t i = 0; i < n * 2; ++i) {
     if (fabsf(out[i]) > 1) ++clipped;
     out[i] = isfinite(out[i]) ? fmaxf(-1, fminf(1, out[i])) : 0;
@@ -196,4 +203,19 @@ OBMeterValues ob_signal_meters(OBSignal *s) {
       .output_raw_peak = value(atomic_load_explicit(&s->output_raw_peak_bits, memory_order_relaxed)),
       .de_esser_reduction = ob_dsp_reduction(s->dsp, 5),
       .de_popper_reduction = ob_dsp_reduction(s->dsp, 6)};
+}
+
+bool ob_signal_advanced(OBSignal *s, OBAdvancedNR processor, uint32_t maximum) {
+  if (s->worker || !ob_dsp_attach_advanced(s->dsp, processor)) return false;
+  s->worker = ob_worker_create(s->dsp, maximum);
+  return s->worker != NULL;
+}
+bool ob_signal_processing(OBSignal *s, const float *v, uint32_t n, float db) {
+  if (!ob_dsp_update_advanced(s->dsp, v, n, db)) return false;
+  memcpy(s->parameters, v, sizeof(s->parameters));
+  return true;
+}
+bool ob_signal_failed(OBSignal *s) { return s->worker && ob_worker_failed(s->worker); }
+uint32_t ob_signal_latency(OBSignal *s) {
+  return s->worker ? OB_ADVANCED_DSP_LATENCY+ob_worker_latency(s->worker) : OB_DSP_LATENCY;
 }

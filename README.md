@@ -5,10 +5,12 @@ Its goal is local voice processing and a virtual microphone without Logitech G H
 ## Build and test
 
 An Apple Silicon Mac with Xcode 26 or later and its command-line tools is required.
-The deployment minimum is macOS 14; current builds are checked with SDK 27.0.
+The deployment minimum is macOS 15; current builds are checked with SDK 27.0.
 The app is built with the OpenBlue Xcode scheme; internal modules use local Swift packages.
 Compatibility with other OS versions has not been established.
-There are no external package dependencies.
+There are no external package dependencies. Advanced noise reduction bundles a
+DPDFNet8 HR model and runs locally with Core ML and Accelerate. Third-party
+notices are available from **About OpenBlue → Third-Party Licenses**.
 
 ```sh
 bash Scripts/build.sh debug
@@ -55,10 +57,16 @@ affect other Logitech peripherals.
    to 0 dB. Master output and **Mute output** act after the limiter. Expand a
    processor to adjust its parameters and switch it on or off. Factory presets
    have individual settings; new user presets start with processors disabled.
+   Noise reduction offers **Standard** and **Advanced** methods. Advanced NR
+   has a separate maximum-reduction control and needs no network connection.
    See [Processing controls](Documentation/Processing.md).
 6. Use **Bypass all processing** to compare with the unprocessed signal.
-   Master output and mute remain active. The chain adds 992 frames (20.67 ms at
-   48 kHz), including bypass, and retains clock alignment and final clipping.
+   Master output and mute remain active. Standard NR adds 992 frames (20.67 ms
+   at 48 kHz). Advanced NR adds 2880 frames (60 ms) of DSP delay plus worker
+   buffering: 90 ms total with 128-frame output callbacks. The processing window
+   displays the active total. Each method retains its delay during bypass;
+   device and clock-buffer delay are additional. Clock alignment and final
+   clipping remain active.
 7. Keep OpenBlue running. Closing the window also removes its Dock icon while
    leaving it in the menu bar; disabling or quitting it stops capture. Turn on
    **Launch at login** under **Startup** in the processing window to start it
@@ -95,8 +103,12 @@ and processors disabled. **Duplicate** copies the selected preset's values.
 Enter a unique name and choose **Save**. **Rename** and **Delete** apply to user
 presets; deletion asks for confirmation and selects **Broadcaster 1**.
 
-Switching presets applies all processing values together without restarting
-the audio engine. The selected Yeti is shared by all presets. User presets,
+Switching presets within the same NR method updates processing without restarting
+the engine. Changing between Standard and Advanced rebuilds the audio path.
+The NR method and advanced maximum reduction are saved with each user preset;
+existing schema 4 presets without these fields retain their values and use
+Standard. Factory originals remain Standard. The selected Yeti is shared by all
+presets. User presets,
 factory selection and catalog revision, and Yeti UID are saved atomically in
 `~/Library/Application Support/OpenBlue/settings.json` using schema 4.
 Enable state is not persisted; every launch starts enabled, subject to microphone

@@ -10,7 +10,7 @@ static void compare_spectrum(float range) {
   for (unsigned i = 0; i < OBP_COUNT; ++i) v[i] = ob_parameter_info(i)->initial;
   v[OBP_NR_BIAS] = 3;
   v[OBP_NR_RANGE] = range;
-  Prepared p = prepare(v);
+  Prepared p = prepare(v, 40);
   FFTSetupD fft = vDSP_create_fftsetupD(9, kFFTRadix2);
   assert(fft);
   double real[2][FFT_N], imag[2][FFT_N];

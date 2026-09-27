@@ -22,6 +22,10 @@ typedef struct {
 
 // Single capture producer and single output consumer. Reset only while stopped.
 OBSignal *ob_signal_create(void);
+bool ob_signal_advanced(OBSignal *signal, OBAdvancedNR processor, uint32_t maximum_callback_frames);
+bool ob_signal_processing(OBSignal *signal, const float *values, uint32_t count, float decibels);
+bool ob_signal_failed(OBSignal *signal);
+uint32_t ob_signal_latency(OBSignal *signal);
 void ob_signal_destroy(OBSignal *signal);
 void ob_signal_reset(OBSignal *signal);
 void ob_signal_gain(OBSignal *signal, float decibels, bool bypass);

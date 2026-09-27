@@ -44,8 +44,34 @@ struct ProcessingEditor: View {
               get: { value(enabled).wrappedValue == 1 },
               set: { value(enabled).wrappedValue = $0 ? 1 : 0 }))
               .toggleStyle(.switch)
-            ForEach(Array(fields.dropFirst())) { control($0) }
-              .disabled(value(enabled).wrappedValue == 0)
+            if group == 2 {
+              Picker("Method", selection: Binding(
+                get: { model.settings.noiseReductionMode },
+                set: { mode in _ = model.changePreset { $0.noiseReductionMode = mode } })) {
+                Text("Standard").tag(NoiseReductionMode.standard)
+                Text("Advanced").tag(NoiseReductionMode.advanced)
+              }
+              if model.settings.noiseReductionMode == .advanced {
+                VStack(alignment: .leading, spacing: 3) {
+                  HStack {
+                    Text("Maximum reduction")
+                    Spacer()
+                    Text(String(format: "%.0f dB", model.settings.advancedReductionDB)).monospacedDigit()
+                  }
+                  ParameterSlider(value: Binding(
+                    get: { model.settings.advancedReductionDB },
+                    set: { value in _ = model.changePreset { $0.advancedReductionDB = value } }),
+                    bounds: 0...60, step: 1)
+                    .accessibilityLabel("Maximum reduction")
+                }.disabled(value(enabled).wrappedValue == 0)
+              } else {
+                ForEach(Array(fields.dropFirst())) { control($0) }
+                  .disabled(value(enabled).wrappedValue == 0)
+              }
+            } else {
+              ForEach(Array(fields.dropFirst())) { control($0) }
+                .disabled(value(enabled).wrappedValue == 0)
+            }
             if group == 5 || group == 6 {
               let prefix = group == 5 ? "deEsser" : "dePopper"
               let display = model.meterDisplay
@@ -62,7 +88,9 @@ struct ProcessingEditor: View {
                 .font(.caption).foregroundStyle(.secondary)
             }
             if group == 2 {
-              Text("Noise is estimated separately in each frequency band. Start with modest sensitivity and reduction; increase only when needed. Strong suppression can affect quiet speech.")
+              Text(model.settings.noiseReductionMode == .advanced
+                ? "Local speech enhancement. Lower maximum reduction blends back more of the original sound; 0 dB keeps the original. The setting describes suppression of removed sounds, not a guaranteed minimum for every sample. Switching methods restarts processing."
+                : "Noise is estimated separately in each frequency band. Start with modest sensitivity and reduction; increase only when needed. Strong suppression can affect quiet speech.")
                 .font(.caption).foregroundStyle(.secondary)
             }
           }
@@ -71,7 +99,7 @@ struct ProcessingEditor: View {
         .disclosureGroupStyle(ProcessingDisclosureStyle())
         Divider()
       }
-      Text("Processing delay: 20.67 ms (992 frames), including bypass. Device and clock-buffer latency are additional.")
+      Text(model.processingDelayDescription)
         .font(.caption).foregroundStyle(.secondary)
     }
     .disabled(model.settingsError != nil)

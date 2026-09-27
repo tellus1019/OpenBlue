@@ -6,8 +6,38 @@ import AudioLifecycle
 import CoreAudio
 import Darwin
 import OSLog
+import NeuralNoiseReduction
 import Settings
 import SwiftUI
+
+// The pointer moves from background preparation to the serialized audio worker.
+// The engine is destroyed before this owner releases the model.
+private final class AdvancedNRProcessor: @unchecked Sendable {
+  let pointer: OpaquePointer
+  init(modelPath: String, statePath: String) throws {
+    var message = [CChar](repeating: 0, count: 1024)
+    guard let pointer = ob_neural_create(modelPath, statePath, &message, message.count) else {
+      throw NSError(domain: "OpenBlue.AdvancedNR", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: String(decoding: message.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)])
+    }
+    self.pointer = pointer
+  }
+  deinit { ob_neural_destroy(pointer) }
+  var callbacks: OBAdvancedNR {
+    OBAdvancedNR(context: UnsafeMutableRawPointer(pointer), process: { context, input, output in
+      ob_neural_process(OpaquePointer(context), input, output)
+    }, reset: { context in ob_neural_reset(OpaquePointer(context)) })
+  }
+}
+
+private actor AdvancedNRLoader {
+  static let shared = AdvancedNRLoader()
+  func load(modelPath: String, statePath: String) -> Result<AdvancedNRProcessor, Error> {
+    // Serialize preparation even if rapid method changes cancel earlier requests.
+    guard !Task.isCancelled else { return .failure(CancellationError()) }
+    return Result { try AdvancedNRProcessor(modelPath: modelPath, statePath: statePath) }
+  }
+}
 
 private let consumerSelector: AudioObjectPropertySelector = 0x6f62_636c
 private let virtualUID = "org.openblue.virtual-device"
@@ -82,6 +112,19 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
   @Published var settingsError: String?
   @Published var presetMessage: String?
   private var engine: OpaquePointer?
+  private var advancedProcessor: AdvancedNRProcessor?
+  private var modelLoad: Task<Void, Never>?
+  private var modelLoadID: UUID?
+  private var engineMode: NoiseReductionMode = .standard
+  @Published private var processingLatency: UInt32 = UInt32(OB_DSP_LATENCY)
+  var processingDelayDescription: String {
+    if settings.noiseReductionMode == .advanced && engine == nil {
+      return "Advanced processing: 60 ms DSP delay plus worker buffering. Device and clock-buffer latency are additional."
+    }
+    let frames = settings.noiseReductionMode == .standard ? UInt32(OB_DSP_LATENCY) : processingLatency
+    return String(format: "Processing delay: %.2f ms (%u frames), including bypass. Device and clock-buffer latency are additional.",
+                  Double(frames)/48, frames)
+  }
   private var engineInput: AudioDeviceID = 0
   private var engineOutput: AudioDeviceID = 0
   private var observedInput: AudioDeviceID = 0
@@ -217,9 +260,16 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     applyProcessing()
   }
   private func applyProcessing() {
+    if engineMode != settings.noiseReductionMode {
+      stopAudio()
+      engineMode = settings.noiseReductionMode
+      failed = false
+      refresh()
+      return
+    }
     if let engine {
       let applied = settings.dspValues.withUnsafeBufferPointer {
-        ob_engine_parameters(engine, $0.baseAddress, UInt32($0.count))
+        ob_engine_processing(engine, $0.baseAddress, UInt32($0.count), settings.advancedReductionDB)
       }
       if !applied {
         settingsError = "Processing settings could not be applied."
@@ -413,16 +463,21 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
       status = "Ready · Select OpenBlue as the microphone in another app"
       return
     }
-    if engineInput != input.id || engineOutput != output.id { stopAudio() }
+    if engine != nil && (engineInput != input.id || engineOutput != output.id) { stopAudio() }
     guard retryTask == nil else { return }
     if engine == nil {
+      engineMode = settings.noiseReductionMode
+      if engineMode == .advanced && advancedProcessor == nil {
+        prepareAdvancedProcessor()
+        return
+      }
       var error: OSStatus = 0
       guard let newEngine = ob_engine_create(input.id, output.id, &error) else {
         scheduleRecovery("Audio setup", error: error)
         return
       }
       let applied = settings.dspValues.withUnsafeBufferPointer {
-        ob_engine_parameters(newEngine, $0.baseAddress, UInt32($0.count))
+        ob_engine_processing(newEngine, $0.baseAddress, UInt32($0.count), settings.advancedReductionDB)
       }
       guard applied else {
         ob_engine_destroy(newEngine)
@@ -430,6 +485,16 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
         status = "Processing settings could not be applied."
         return
       }
+      if engineMode == .advanced {
+        guard let advancedProcessor,
+          ob_engine_advanced(newEngine, advancedProcessor.callbacks) else {
+          ob_engine_destroy(newEngine)
+          failed = true
+          status = "Advanced noise reduction could not prepare the audio worker."
+          return
+        }
+      }
+      processingLatency = ob_engine_latency(newEngine)
       ob_engine_set_profiling(newEngine, callbackProfiling)
       let start = ob_engine_start(newEngine)
       guard start == noErr else {
@@ -442,11 +507,39 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
       engineOutput = output.id
       startMonitoring()
       recovery.reset()
-      audioLog.info("Audio started: input=\(input.id) output=\(output.id) consumers=\(count) dspDelayFrames=\(OB_DSP_LATENCY)")
+      audioLog.info("Audio started: input=\(input.id) output=\(output.id) consumers=\(count) dspDelayFrames=\(self.processingLatency)")
     }
     status = "Processing · \(count) external input process(es)"
   }
+  private func prepareAdvancedProcessor() {
+    guard modelLoad == nil else { return }
+    guard let modelURL = Bundle.main.url(forResource: "DPDFNet8", withExtension: "mlmodelc"),
+      let stateURL = Bundle.main.url(forResource: "initial-state", withExtension: "f32", subdirectory: "DPDFNet") else {
+      failed = true
+      status = "Advanced noise reduction resources are missing. Reinstall OpenBlue."
+      return
+    }
+    status = "Preparing advanced noise reduction"
+    let id = UUID()
+    modelLoadID = id
+    let modelPath = modelURL.path, statePath = stateURL.path
+    modelLoad = Task { [weak self] in
+      let result = await AdvancedNRLoader.shared.load(modelPath: modelPath, statePath: statePath)
+      guard !Task.isCancelled, let self, self.modelLoadID == id else { return }
+      self.modelLoad = nil
+      self.modelLoadID = nil
+      switch result {
+      case .success(let processor):
+        self.advancedProcessor = processor
+        self.refresh()
+      case .failure(let error):
+        self.failed = true
+        self.status = "Advanced noise reduction: \(error.localizedDescription)"
+      }
+    }
+  }
   func stopAudio() {
+    modelLoad?.cancel(); modelLoad = nil; modelLoadID = nil
     meterTimer?.invalidate(); meterTimer = nil
     readoutTimer?.invalidate(); readoutTimer = nil
     healthTimer?.invalidate(); healthTimer = nil
@@ -458,6 +551,7 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
       ob_engine_destroy(engine)
     }
     engine = nil
+    advancedProcessor = nil
     engineInput = 0
     engineOutput = 0
     meterDisplay.clearLevels()
@@ -505,7 +599,9 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
   @objc private func checkHealth(_ timer: Timer) {
     guard let engine else { return }
     let error = ob_engine_error(engine)
-    if error != noErr { scheduleRecovery("Audio processing", error: error) }
+    if error != noErr {
+      scheduleRecovery(error == OB_ADVANCED_NR_ERROR ? "Advanced noise reduction" : "Audio processing", error: error)
+    }
   }
 
   @objc private func recordProfile(_ timer: Timer) {
@@ -605,6 +701,7 @@ struct ContentView: View {
 final class AppDelegate: NSObject, NSApplicationDelegate {
   lazy var model = AudioModel()
   private let loginItem = LoginItemModel()
+  private let aboutWindow = AboutWindowController()
   private lazy var mainWindow = MainWindowController { [self] in
     NSHostingView(rootView: ContentView(model: model, loginItem: loginItem))
   }
@@ -615,7 +712,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func showMainWindow() { mainWindow.show() }
-  func closeMainWindow() { mainWindow.window?.performClose(nil) }
+  func closeMainWindow() { NSApp.keyWindow?.performClose(nil) }
+  func showAboutWindow() { aboutWindow.show() }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
@@ -639,6 +737,7 @@ private struct StatusMenu: View {
       get: { model.enabled }, set: { model.setEnabled($0) }))
       .disabled(model.settingsError != nil)
     Button("Show OpenBlue") { delegate.showMainWindow() }
+    Button("About OpenBlue") { delegate.showAboutWindow() }
     Divider()
     Button("Quit OpenBlue") { NSApp.terminate(nil) }
   }
@@ -673,6 +772,9 @@ private struct StatusMenu: View {
       StatusMenu(model: delegate.model, delegate: delegate)
     }
     .commands {
+      CommandGroup(replacing: .appInfo) {
+        Button("About OpenBlue") { delegate.showAboutWindow() }
+      }
       CommandGroup(replacing: .newItem) {
         Button("Close Window") { delegate.closeMainWindow() }
           .keyboardShortcut("w", modifiers: .command)
