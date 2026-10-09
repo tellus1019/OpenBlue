@@ -19,7 +19,8 @@
 #define RATE 48000.0f
 #define FFT_N 512u
 #define HOP 256u
-#define LOOK 480u
+#define LOOK OB_LIMIT_MAX_LOOKAHEAD
+#define DELAY_CROSSFADE 240u
 #define LIMIT_RING (LOOK + 1)
 #include "OBNoiseReduction.h"
 #define DIRTY 4u
@@ -81,13 +82,15 @@ struct OBDSP {
   DynamicBand bands[2];
   float gain_in, gain_out, makeup, pre_gain, limit_boost, mix[OB_DSP_GROUPS], bypass;
   unsigned limit_attack;
+  unsigned lookahead, previous_lookahead, delay_fade_remaining;
+  _Atomic uint32_t latency_frames;
   bool rebuild_peaks;
   bool active[OB_DSP_GROUPS];
   unsigned preroll[OB_DSP_GROUPS];
   float input[2][FFT_N], overlap[2][FFT_N * 2], window[FFT_N];
   float real[2][FFT_N / 2], imag[2][FFT_N / 2], spectral_gain[FFT_N / 2 + 1];
   NoiseEstimator noise;
-  float dry[2][OB_ADVANCED_DSP_LATENCY];
+  float dry[2][OB_ADVANCED_DSP_MAX_LATENCY];
   OBAdvancedNR neural;
   float neural_input[OB_ADVANCED_HOP * 2], neural_output[OB_ADVANCED_HOP * 2];
   float neural_dry[OB_ADVANCED_HOP * 2], neural_history[OB_ADVANCED_NR_LATENCY][2];
@@ -179,7 +182,9 @@ static Prepared prepare(const float *v, float advanced_range) {
   p.limit_release = response(v[OBP_LIMIT_RELEASE]);
   return p;
 }
-uint32_t ob_dsp_latency_frames(void) { return OB_DSP_LATENCY; }
+uint32_t ob_dsp_latency_frames(const OBDSP *s) {
+  return atomic_load_explicit(&s->latency_frames, memory_order_relaxed);
+}
 OBDSP *ob_dsp_create(void) {
   OBDSP *s = calloc(1, sizeof(*s));
   if (!s) return NULL;
@@ -221,6 +226,12 @@ void ob_dsp_discontinuity(OBDSP *s) {
   s->neural_running = false;
   s->neural_floor = p->advanced_floor;
   memset(s->limit_samples, 0, sizeof(s->limit_samples));
+  s->lookahead = p->v[OBP_LIMIT_ON] ? p->limit_attack : 0;
+  s->previous_lookahead = s->lookahead;
+  s->delay_fade_remaining = 0;
+  atomic_store_explicit(&s->latency_frames,
+      (s->neural.process ? OB_ADVANCED_NR_LATENCY : OB_STANDARD_NR_LATENCY) + s->lookahead,
+      memory_order_relaxed);
   memset(s->mix, 0, sizeof(s->mix));
   memset(s->active, 0, sizeof(s->active));
   memset(s->preroll, 0, sizeof(s->preroll));
@@ -246,6 +257,11 @@ void ob_dsp_reset(OBDSP *s) {
   }
   ob_dsp_discontinuity(s);
   atomic_store(&s->invalid_samples, 0);
+}
+uint32_t ob_dsp_startup_silence_frames(const OBDSP *s) {
+  // Only model history is guaranteed silent if lookahead changes while starting.
+  if (!s || !s->neural.process || s->clock >= OB_ADVANCED_NR_LATENCY) return 0;
+  return OB_ADVANCED_NR_LATENCY - (uint32_t)s->clock;
 }
 bool ob_dsp_update(OBDSP *s, const float *v, uint32_t n) {
   return ob_dsp_update_advanced(s, v, n, s->advanced_range);
@@ -430,7 +446,7 @@ static inline __attribute__((always_inline)) void process_block(
     OBDSP *s, float *out, uint32_t n, const Prepared *p, unsigned active_mask,
     bool update_activity, bool update_coefficients, bool advanced) {
   const float *v = p->v;
-  const unsigned latency = advanced ? OB_ADVANCED_DSP_LATENCY : OB_DSP_LATENCY;
+  const unsigned latency = advanced ? OB_ADVANCED_DSP_MAX_LATENCY : OB_DSP_MAX_LATENCY;
   const float floor_target = p->advanced_floor;
   float reduction[OB_DSP_GROUPS] = {0};
   float minimum_limit_gain = 1;
@@ -442,8 +458,7 @@ static inline __attribute__((always_inline)) void process_block(
     for (unsigned ch = 0; ch < 2; ++ch) {
       float input = out[2*i+ch];
       if (!isfinite(input)) { input = 0; ++invalid; }
-      dry[ch] = s->dry[ch][s->clock%latency];
-      s->dry[ch][s->clock%latency] = input;
+      dry[ch] = input;
       x[ch] = input;
     }
     if (!advanced) s->gain_in += (p->gain_in-s->gain_in)*CONTROL_BLEND;
@@ -465,6 +480,26 @@ static inline __attribute__((always_inline)) void process_block(
       for (unsigned f = advanced ? 1 : 0; f < 6; ++f)
         if (active_mask & (1u << filter_group[f]))
           smooth_coeff(&s->filters[f], p->filters[f]);
+    }
+    unsigned requested_lookahead = active_mask & (1u << 8) ? p->limit_attack : 0;
+    // Finish the current transition before accepting the latest requested tap.
+    if (!s->delay_fade_remaining && requested_lookahead != s->lookahead) {
+      s->previous_lookahead = s->lookahead;
+      s->lookahead = requested_lookahead;
+      s->delay_fade_remaining = DELAY_CROSSFADE;
+      s->rebuild_peaks = true;
+      atomic_store_explicit(&s->latency_frames, latency - LOOK + s->lookahead,
+                            memory_order_relaxed);
+    }
+    float delay_fade = (float)s->delay_fade_remaining / DELAY_CROSSFADE;
+    unsigned dry_index = (unsigned)((s->clock + LOOK - s->lookahead) % latency);
+    unsigned previous_dry_index = (unsigned)((s->clock + LOOK - s->previous_lookahead) % latency);
+    for (unsigned ch = 0; ch < 2; ++ch) {
+      float input = dry[ch];
+      float current = s->dry[ch][dry_index];
+      float previous = s->dry[ch][previous_dry_index];
+      dry[ch] = current + (previous-current)*delay_fade;
+      s->dry[ch][s->clock%latency] = input;
     }
     PROFILE_STAGE(0);
     if (advanced) {
@@ -564,11 +599,12 @@ static inline __attribute__((always_inline)) void process_block(
       s->limit_samples[s->clock%LIMIT_RING][ch] = x[ch];
     }
     PROFILE_STAGE(7);
-    unsigned delayed_index = (unsigned)((s->clock+1)%LIMIT_RING);
+    unsigned delayed_index = (unsigned)((s->clock+LIMIT_RING-s->lookahead)%LIMIT_RING);
+    unsigned previous_index = (unsigned)((s->clock+LIMIT_RING-s->previous_lookahead)%LIMIT_RING);
     float limit_mix = 1;
     if (active_mask & (1u << 8)) {
-      if (s->limit_attack != p->limit_attack) {
-        s->limit_attack = p->limit_attack; s->rebuild_peaks = true;
+      if (s->limit_attack != s->lookahead) {
+        s->limit_attack = s->lookahead; s->rebuild_peaks = true;
       }
       while (s->queue_head < s->queue_tail &&
              s->peak_time[s->queue_head%(LIMIT_RING+1)] < s->clock) ++s->queue_head;
@@ -587,8 +623,12 @@ static inline __attribute__((always_inline)) void process_block(
           approach(s->limit_gain, limit, p->limit_release);
       // A lower user ceiling can arrive after a sample entered lookahead.
       // Follow its smoothed value on the sample being emitted as well.
-      float emitted_peak = fmaxf(fabsf(s->limit_samples[delayed_index][0]),
-                                 fabsf(s->limit_samples[delayed_index][1]));
+      float emitted_peak = 0;
+      for (unsigned ch = 0; ch < 2; ++ch) {
+        float current = s->limit_samples[delayed_index][ch];
+        float previous = s->limit_samples[previous_index][ch];
+        emitted_peak = fmaxf(emitted_peak, fabsf(current + (previous-current)*delay_fade));
+      }
       s->limit_gain = fminf(s->limit_gain, s->ceiling/fmaxf(emitted_peak, 1e-20f));
       // The meter reports the block maximum; steady wet gain needs one dB conversion.
       if (s->mix[8] == 1)
@@ -598,9 +638,12 @@ static inline __attribute__((always_inline)) void process_block(
       limit_mix = 1 + (s->limit_gain-1)*s->mix[8];
     }
     for (unsigned ch = 0; ch < 2; ++ch) {
-      float wet = s->limit_samples[delayed_index][ch]*limit_mix;
+      float current = s->limit_samples[delayed_index][ch];
+      float previous = s->limit_samples[previous_index][ch];
+      float wet = (current + (previous-current)*delay_fade)*limit_mix;
       out[2*i+ch] = (wet + (dry[ch]-wet)*s->bypass)*s->gain_out;
     }
+    if (s->delay_fade_remaining) --s->delay_fade_remaining;
     PROFILE_STAGE(8);
   }
   if (minimum_limit_gain < 1)
@@ -656,11 +699,15 @@ bool ob_dsp_process_advanced(OBDSP *s, float *out) {
     s->active[2] = false; s->mix[2] = 0;
   }
   s->neural_running = running;
+  bool hpf_enabled = p->v[OBP_HPF_ON] != 0;
+  bool update_hpf = s->active[1] != hpf_enabled || s->preroll[1] ||
+      s->mix[1] != p->v[OBP_HPF_ON];
+  bool smooth_hpf = update_hpf || s->filters[0].smoothing;
   // Preprocess a complete hop before prediction, avoiding an extra hop of delay.
   for (unsigned i = 0; i < OB_ADVANCED_HOP; ++i) {
     s->gain_in += (p->gain_in-s->gain_in)*CONTROL_BLEND;
-    update_group(s, p, 1, p->v[OBP_HPF_ON] != 0);
-    if (s->active[1]) smooth_coeff(&s->filters[0], p->filters[0]);
+    if (update_hpf) update_group(s, p, 1, hpf_enabled);
+    if (smooth_hpf && s->active[1]) smooth_coeff(&s->filters[0], p->filters[0]);
     unsigned index = (unsigned)((s->clock+i)%OB_ADVANCED_NR_LATENCY);
     for (unsigned ch = 0; ch < 2; ++ch) {
       float x = out[2*i+ch];
@@ -680,7 +727,19 @@ bool ob_dsp_process_advanced(OBDSP *s, float *out) {
   // Fade off even while the final in-flight neural samples are being drained.
   Prepared current = *p;
   current.v[OBP_NR_ON] = requested ? 1 : 0;
-  process_block(s, out, OB_ADVANCED_HOP, &current, 0, true, true, true);
+  unsigned active_mask = 0;
+  bool update_activity = false, update_coefficients = false;
+  for (unsigned g = 2; g < OB_DSP_GROUPS; ++g) {
+    if (s->active[g]) active_mask |= 1u << g;
+    bool enabled = current.v[enable[g]] != 0 && (g != 2 || running);
+    if (s->active[g] != enabled || s->preroll[g] || s->mix[g] != (float)enabled)
+      update_activity = true;
+  }
+  for (unsigned f = 1; f < 6; ++f)
+    if ((active_mask & (1u << filter_group[f])) && s->filters[f].smoothing)
+      update_coefficients = true;
+  process_block(s, out, OB_ADVANCED_HOP, &current, active_mask,
+                update_activity, update_coefficients, true);
   return true;
 }
 OBDSPStats ob_dsp_stats(OBDSP *s) {

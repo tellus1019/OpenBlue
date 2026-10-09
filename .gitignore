@@ -77,8 +77,8 @@ Desktop.ini
 /research/
 /recordings/
 
-# Private icon source assets
-/AppIcon/
+# Private brand source assets
+/BrandAssets/
 
 # Secrets and signing material
 .env

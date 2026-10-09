@@ -12,23 +12,42 @@ and mute → full-scale clip → output meter.
 
 Input gain is software gain. It does not move the Yeti's hardware gain control.
 The input meter reads before input gain. The output meter reads the final signal.
-Reduction meters show attenuation in dB, excluding independent gain controls.
-The band reduction meters show center-frequency attenuation; their detector
-curves show the selected frequency and width, not the current output spectrum.
+Internally measured reduction excludes independent gain controls.
+Band reduction measures center-frequency attenuation. The inspector provides
+frequency and width controls without a response-curve display.
 Numeric readouts target five updates per second.
 
 A new user preset starts with all processors disabled. Factory presets have
 individual processing settings; the initial selection is Broadcaster 1.
 Each processor switch bypasses that processor and its associated gain controls.
 Whole-chain bypass skips input gain and all processors. Master output and mute
-remain active after bypass. Standard NR retains 992 frames (20.67 ms) of delay:
-512 frames for spectral processing and 480 frames for limiter lookahead.
-Advanced NR retains 2880 frames (60 ms) in the DSP plus a bounded worker buffer.
-The buffer is the output callback size rounded up to 480 frames, plus 960 frames;
-for 128-frame callbacks the total is 4320 frames (90 ms).
-The processing window shows the active total. Turning NR off or bypassing preserves
-that mode's delay. Switching methods rebuilds the audio path and clears its history.
-Device and clock-buffer delay is additional.
+remain active after bypass. Standard NR retains 512 frames (10.67 ms) of spectral
+delay. Advanced NR retains 2400 frames (50 ms) of model delay plus worker buffering
+of 888 frames and one output callback. Limiter lookahead adds its current Attack
+window (0–480 frames), and becomes zero after the limiter fades out.
+For example, with Attack at 5 ms and a 48-frame output callback, Standard DSP
+delay is 752 frames (15.67 ms), and Advanced DSP plus worker delay is 3576 frames
+(74.5 ms). These are processing delays, not end-to-end measurements.
+The processing window shows the current DSP and worker delay. Turning NR off or
+using whole-chain bypass preserves the selected method's delay and keeps the
+bypass signal aligned with the wet signal. Changing limiter lookahead crossfades
+both paths over 240 frames (5 ms). Rapid edits complete the current transition
+before starting a transition to the latest requested value.
+Switching methods rebuilds the audio path and clears its history.
+
+At route creation, OpenBlue requests 128-frame input buffers and reads back the
+actual device value. A rejected request retains the actual size; a failed read
+prevents route creation. The input FIFO targets that size, with
+a minimum of one output callback plus 32 interpolation frames and 64 margin
+frames (144 frames with 128-frame input and 48-frame output callbacks).
+Clock alignment estimates the input/output speed ratio from valid device
+sample and host timestamps over approximately two seconds. Startup uses the
+nominal ratio until both timestamp spans reach 0.5 seconds. FIFO occupancy adds
+only a slow trim, smoothed over two seconds at 1 ppm per frame of error (limited
+to 500 ppm). The total ratio is limited to 0.5% without additional audio buffering.
+Route reconstruction clears the estimate after reconnection or a sample-rate
+change; backwards timestamps or long timestamp interruptions also clear it. The loopback driver adds 64 frames (1.33 ms). Input buffering, interpolation
+and virtual-device latency are additional to the displayed processing delay.
 Final clipping to ±1 remains active and is counted in diagnostics.
 
 ## Behavior
@@ -53,10 +72,15 @@ Final clipping to ±1 remains active and is counted in diagnostics.
   Prominent tonal components are excluded from initialization, including some
   tonal noise. This is a statistical suppressor, not speech recognition: strong reduction can affect
   quiet speech, and nonstationary noise may remain.
-- **Advanced noise reduction:** the bundled DPDFNet8 HR FP32 model processes
-  48 kHz audio with 960-point transforms and 480-frame hops. Core ML runs the
-  optimized recurrent model on the CPU; Accelerate handles real DFTs. The two
-  channels retain independent model states. No network service or model download
+- **Advanced noise reduction:** the bundled DPDFNet8 HR model uses mixed
+  float16 neural inference and float32 normalization and signal processing with
+  960-point transforms and 480-frame hops at 48 kHz. Core ML targets the Neural
+  Engine for the neural core. Native processing applies normalization, masks
+  and complex deep filtering; Accelerate handles real DFTs. Independent stereo
+  lanes and recurrent branches share one prediction
+  per hop without additional lookahead. The two channels retain independent model
+  states in one packed tensor. Two preallocated state buffers alternate, and the
+  returned state is retained if Core ML supplies different storage. No network service or model download
   is required. Maximum reduction blends the aligned original with the enhanced
   signal using an original-signal fraction of `10^(-dB/20)`. At 0 dB the original
   is retained; larger values retain less residual sound. This is a blend-based
@@ -78,11 +102,13 @@ Final clipping to ±1 remains active and is counted in diagnostics.
 - **Compressor:** linked peak compression with a 6 dB soft knee. Pre gain changes
   the level entering both detector and audio processing; Post gain follows
   compression. Ratio describes the steady-state slope above the knee.
-- **Limiter:** linked sample-peak limiting with 480 frames (10 ms) of lookahead.
-  Boost precedes detection and limiting. Attack selects a 0–10 ms advance window
-  and gain descent; zero gives immediate gain reduction. A final sample bound
-  enforces the ceiling when limiting is fully enabled. It is not a true-peak
-  limiter. Ceiling changes follow a 5 ms smoothed value. During enable/disable
+- **Limiter:** linked sample-peak limiting with lookahead equal to Attack (0–10 ms).
+  Boost precedes detection and limiting. Attack selects the advance window and
+  gain descent; zero gives immediate gain reduction without added lookahead.
+  Disabling the limiter removes lookahead after fade-out. A final sample bound
+  enforces the ceiling, including the blended sample during lookahead changes,
+  when limiting is fully enabled. It is not a true-peak limiter. Ceiling changes
+  follow a 5 ms smoothed value. During enable/disable
   crossfades the dry contribution can exceed the ceiling. Full-scale clipping
   remains after Master output.
 
@@ -104,15 +130,38 @@ Processor crossfades and whole-chain bypass changes use a 5 ms time constant.
 Active filter coefficients follow a 10 ms time constant; waking filters start
 with current coefficients. Independent gain controls and mute are smoothed.
 Whole-chain bypass suspends advanced neural inference after fading out; other
-individually enabled processors keep running. Model loading and warm-up happen
-off the UI thread, and inference runs on a dedicated non-realtime worker.
+individually enabled processors keep running. Model loading and warm-up begin
+at application launch, off the UI thread and without opening audio devices.
+If a client starts capture while Advanced NR is preparing, Standard processing
+starts immediately with the selected preset. An existing Standard route also
+continues until Advanced NR is ready. The status area identifies this temporary
+mode, and controls remain available. The saved method remains Advanced; the
+route switches when preparation finishes if Advanced is still selected.
+A prepared model is retained for subsequent switches and client reconnects,
+while each new route resets its signal history. Core ML caches device-specific
+compilation on disk for later launches; OS updates, model replacement, or cache
+reclamation can require preparation again.
+Inference runs on a dedicated worker with real-time scheduling and a private
+Audio Workgroup that communicates its 10 ms processing period to the system.
+Scheduling and workgroup setup must succeed before the worker becomes available.
+The initial 2400-frame silent model history is emitted without waiting for inference;
+this guarantee does not depend on the current or subsequently edited lookahead. This
+does not increase latency or skip input processing; output deadlines apply once
+the causal DSP history can contain audible samples.
 The audio callback only exchanges samples through preallocated bounded rings;
 it never waits for inference. Processing receives a complete prepared parameter
-snapshot at block boundaries. A model error, missed worker deadline, or input
-starvation in advanced mode emits silence and enters the engine's recovery path;
-it does not fall back to unprocessed audio. Histories clear on rebuild; settings
-survive. Standard mode clears its history and resumes through its fixed delay
+snapshot at block boundaries. A temporary worker deadline miss fades to silence
+over 1 ms and resumes the current processed timeline with a 1 ms fade when the
+worker catches up. Expired output is not replayed, latency does not accumulate,
+and model state is retained. Diagnostics count the missing frames and episodes.
+A model error, exhausted worker ring, or input starvation in advanced mode emits
+silence and enters the engine's recovery path; it does not fall back to
+unprocessed audio. Histories clear on rebuild; settings
+survive. Standard mode clears its history and resumes through its current processing delay
 after input starvation.
+While a client uses the virtual microphone, a scoped process activity requests
+time-sensitive execution even with every window closed. It ends when processing
+stops and does not prevent idle system sleep.
 
 Each preset holds separate Standard NR parameters and an Advanced maximum
 reduction. Factory presets use 40 dB for Advanced NR. Switching methods retains
@@ -231,3 +280,20 @@ After a Release build, `bash Scripts/test-neural.sh` checks the bundled model
 with synthetic audio, including reset reproducibility, channel isolation,
 in-place processing, silence, and invalid input. It does not open audio devices.
 A different compiled model path can be passed as its first argument.
+
+`Scripts/convert-neural-model.py` exports the stereo neural core from the pinned
+official source and checkpoint identified by the script constants.
+It verifies their hashes and compares a recurrent FP32 sequence against the
+official streaming modules before export. The normalization file contains the
+577 FP32 initial values; neural recurrent histories start at zero.
+
+```sh
+python3 Scripts/convert-neural-model.py \
+  --upstream-dir /path/to/DPDFNet \
+  --checkpoint /path/to/dpdfnet8_48khz_hr.pth \
+  --output Resources/Models/DPDFNet8.mlpackage \
+  --normalization-output Resources/Models/DPDFNet/initial-state.f32
+```
+
+Omitting both output arguments runs the FP32 reference comparison without
+changing model resources. Xcode compiles the exported package for distribution.

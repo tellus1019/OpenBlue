@@ -30,8 +30,8 @@ static void suspended_audio(void) {
   dc(s, 8192);
   assert_sleeping(s);
   // With every processor off, arbitrary audio still has exactly the fixed delay.
-  float history[OB_DSP_LATENCY][2];
-  for (unsigned i = 0; i < OB_DSP_LATENCY; ++i) {
+  float history[OB_STANDARD_NR_LATENCY][2];
+  for (unsigned i = 0; i < OB_STANDARD_NR_LATENCY; ++i) {
     history[i][0] = .1f; history[i][1] = -.05f;
   }
   for (unsigned i = 0; i < 8192; ++i) {
@@ -39,8 +39,8 @@ static void suspended_audio(void) {
     float input[] = {audio[0], audio[1]};
     ob_dsp_process(s, audio, 1);
     for (unsigned ch = 0; ch < 2; ++ch) {
-      assert(audio[ch] == history[i%OB_DSP_LATENCY][ch]);
-      history[i%OB_DSP_LATENCY][ch] = input[ch];
+      assert(audio[ch] == history[i%OB_STANDARD_NR_LATENCY][ch]);
+      history[i%OB_STANDARD_NR_LATENCY][ch] = input[ch];
     }
   }
   // Delay rings advance while the expensive processing state stays untouched.

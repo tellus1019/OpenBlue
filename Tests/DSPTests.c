@@ -60,7 +60,7 @@ static void parity(void) {
   }
   for (unsigned i = 0; i < 4096; ++i) {
     for (unsigned ch = 0; ch < 2; ++ch) {
-      float expected = i < OB_DSP_LATENCY ? 0 : input[2*(i-OB_DSP_LATENCY)+ch];
+      float expected = i < OB_STANDARD_NR_LATENCY ? 0 : input[2*(i-OB_STANDARD_NR_LATENCY)+ch];
       assert(fabsf(out[2*i+ch]-expected) < 1e-6f);
     }
   }

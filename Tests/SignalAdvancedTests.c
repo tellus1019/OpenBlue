@@ -19,9 +19,10 @@ int main(void) {
     v[i] = p->kind == OB_PARAMETER_BOOLEAN ? 0 : p->initial;
   }
   v[OBP_OUTPUT_GAIN] = 0;
-  assert(ob_signal_parameters(s,v,OBP_COUNT));
+  assert(ob_signal_processing(s,v,OBP_COUNT,40));
   assert(ob_signal_advanced(s,(OBAdvancedNR){NULL,unused_process,reset},128));
-  assert(ob_signal_latency(s) == 4320);
+  assert(ob_signal_latency(s) == 3416);
+  assert(ob_signal_set_input_frames(s,128));
   float capture[256], output[256];
   unsigned time = 0;
   double energy = 0;

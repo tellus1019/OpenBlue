@@ -16,6 +16,7 @@ struct OBEngine {
   _Atomic uint64_t captured_frames, render_frames;
   bool profiling;
   uint64_t ticks_per_second;
+  double host_seconds_per_tick;
   uint64_t ticks_per_bucket;
   _Atomic uint64_t input_callbacks, input_total_ticks, input_max_ticks;
   _Atomic uint64_t output_callbacks, output_total_ticks, output_budget_exceeded;
@@ -89,6 +90,9 @@ static OSStatus capture(void *context, AudioUnitRenderActionFlags *flags,
     return noErr;
   }
   atomic_fetch_add_explicit(&e->captured_frames, n, memory_order_relaxed);
+  if ((time->mFlags & kAudioTimeStampSampleHostTimeValid) == kAudioTimeStampSampleHostTimeValid)
+    ob_signal_input_time(e->signal, time->mSampleTime,
+                         time->mHostTime * e->host_seconds_per_tick);
   ob_signal_push(e->signal, e->capture, n);
   record_input(e, started);
   return noErr;
@@ -109,6 +113,9 @@ static OSStatus render(void *context, AudioUnitRenderActionFlags *flags,
     record_output(e, started, n);
     return noErr;
   }
+  if ((time->mFlags & kAudioTimeStampSampleHostTimeValid) == kAudioTimeStampSampleHostTimeValid)
+    ob_signal_output_time(e->signal, time->mSampleTime,
+                          time->mHostTime * e->host_seconds_per_tick);
   ob_signal_render(e->signal, buffers->mBuffers[0].mData, n);
   atomic_fetch_add_explicit(&e->render_frames, n, memory_order_relaxed);
   record_output(e, started, n);
@@ -197,6 +204,7 @@ OBEngine *ob_engine_create(AudioDeviceID input, AudioDeviceID output,
   }
   mach_timebase_info_data_t timebase;
   if (mach_timebase_info(&timebase) == KERN_SUCCESS && timebase.numer) {
+    e->host_seconds_per_tick = (double)timebase.numer / timebase.denom / 1e9;
     e->ticks_per_second = 1000000000ull * timebase.denom / timebase.numer;
     e->ticks_per_bucket = (uint64_t)OB_CALLBACK_BUCKET_US * 1000 *
                           timebase.denom / timebase.numer;
@@ -208,7 +216,16 @@ OBEngine *ob_engine_create(AudioDeviceID input, AudioDeviceID output,
   if (AudioObjectGetPropertyData(output, &buffer_address, 0, NULL,
                                 &buffer_size, &e->output_frames) != noErr)
     e->output_frames = 0;
-  *error = setup(e, &e->input, input, true);
+  // Request lower input latency, but size the FIFO from the actual device value.
+  UInt32 requested_frames = 128;
+  (void)AudioObjectSetPropertyData(input, &buffer_address, 0, NULL,
+                                  sizeof(requested_frames), &requested_frames);
+  UInt32 input_frames = 0, input_size = sizeof(input_frames);
+  *error = AudioObjectGetPropertyData(input, &buffer_address, 0, NULL,
+                                      &input_size, &input_frames);
+  if (!*error && !ob_signal_set_input_frames(e->signal, input_frames))
+    *error = kAudioUnitErr_TooManyFramesToProcess;
+  if (!*error) *error = setup(e, &e->input, input, true);
   if (!*error)
     *error = setup(e, &e->output, output, false);
   if (*error) {
@@ -241,12 +258,6 @@ void ob_engine_destroy(OBEngine *e) {
   }
   ob_signal_destroy(e->signal);
   free(e);
-}
-void ob_engine_gain(OBEngine *e, float db, bool bypass) {
-  ob_signal_gain(e->signal, db, bypass);
-}
-bool ob_engine_parameters(OBEngine *e, const float *v, uint32_t n) {
-  return ob_signal_parameters(e->signal, v, n);
 }
 void ob_engine_set_profiling(OBEngine *e, bool enabled) {
   e->profiling = enabled;

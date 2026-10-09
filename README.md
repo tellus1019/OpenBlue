@@ -1,4 +1,8 @@
-# OpenBlue
+<h1>
+  <img src="Resources/Branding/openblue-logo-horizontal.svg#gh-light-mode-only" alt="OpenBlue" width="320">
+  <img src="Resources/Branding/openblue-logo-horizontal-dark.svg#gh-dark-mode-only" alt="OpenBlue" width="320">
+</h1>
+
 OpenBlue is a native macOS application for the original Blue Yeti.
 Its goal is local voice processing and a virtual microphone without Logitech G HUB.
 
@@ -53,23 +57,27 @@ affect other Logitech peripherals.
    Documents or other personal folders. Choose **Show OpenBlue** from the menu
    bar to display the processing window and Dock icon.
 4. Select **OpenBlue** as the microphone input in another application.
-5. Adjust **Input gain** from -24 to +12 dB and **Master output** from -80
-   to 0 dB. Master output and **Mute output** act after the limiter. Expand a
-   processor to adjust its parameters and switch it on or off. Factory presets
+5. Adjust **Input gain** from -24 to +12 dB and **Output** from -80
+   to 0 dB. Master output and **Mute** act after the limiter. Select a
+   processor chip to edit its parameters, including while it is off. Use its
+   switch to turn processing on or off. Factory presets
    have individual settings; new user presets start with processors disabled.
    Noise reduction offers **Standard** and **Advanced** methods. Advanced NR
    has a separate maximum-reduction control and needs no network connection.
    See [Processing controls](Documentation/Processing.md).
-6. Use **Bypass all processing** to compare with the unprocessed signal.
-   Master output and mute remain active. Standard NR adds 992 frames (20.67 ms
-   at 48 kHz). Advanced NR adds 2880 frames (60 ms) of DSP delay plus worker
-   buffering: 90 ms total with 128-frame output callbacks. The processing window
-   displays the active total. Each method retains its delay during bypass;
-   device and clock-buffer delay are additional. Clock alignment and final
-   clipping remain active.
+6. Use **Bypass** to compare with the unprocessed signal.
+   Master output and mute remain active. Standard NR retains 512 frames of
+   spectral delay. Advanced NR retains 2400 frames of model delay plus worker
+   buffering of 888 frames and one output callback. Limiter lookahead matches
+   Attack (0–10 ms) and becomes zero after the limiter fades out. Lookahead
+   changes crossfade over 5 ms, keeping the bypass path aligned. The processing
+   window displays the current DSP and worker delay; input buffering and
+   virtual-device latency are additional. Advanced noise reduction provides
+   end-to-end latency of 80 ms or less. Clock alignment and final clipping
+   remain active.
 7. Keep OpenBlue running. Closing the window also removes its Dock icon while
    leaving it in the menu bar; disabling or quitting it stops capture. Turn on
-   **Launch at login** under **Startup** in the processing window to start it
+   **Launch at login** under **Startup** in **Settings** (⌘,) to start it
    automatically at login, without a window or Dock icon. This option is off
    until registered; macOS may require approval in Login Items settings.
 
@@ -80,16 +88,16 @@ not windows or browser tabs. Do not select its output for system playback:
 it is the feed into the virtual microphone, not a speaker.
 The virtual input supplies silence when no matching audio is available.
 
-While the processing window is visible, meter bars target 60 updates per second
-with three-frame linear interpolation in both directions. Input and output bars
+While the processing window or Quick Access is visible, stereo meter bars target
+60 updates per second with three-frame linear interpolation in both directions. Input and output bars
 use the latest rendered block peaks; their numeric readouts use an immediate-attack,
 200 dB/second release envelope and update five times per second. Display polling
-stops when the window is not visible. These are level indicators, not calibrated
+stops when neither surface is visible. These are level indicators, not calibrated
 loudness meters. Meter smoothing does not alter audio.
 
 ## Presets and recovery
 
-Choose a preset above the processing controls. The factory library includes
+Choose a preset in the sidebar or Quick Access. The factory library includes
 **Flat**, **AM**, **Bass Boost**, **Broadcaster 1**, **Broadcaster 2**, **Classic Radio**,
 **Crisp and Warm**, **FM**, **High Voice - Loud**, **High Voice - Soft**,
 **Low Voice - Loud**, **Low Voice - Soft**, and **Warm and Vintage**.
@@ -104,8 +112,9 @@ automatically. Switching only the NR method retains the factory preset, and
 writing an unchanged value does not create a copy.
 **New** creates a user preset with default values
 and processors disabled. **Duplicate** copies the selected preset's values.
-Enter a unique name and choose **Save**. **Rename** and **Delete** apply to user
-presets; deletion asks for confirmation and selects **Broadcaster 1**.
+Both actions create the preset immediately and begin inline naming. Enter a unique
+name and press Return or leave the field to save; Escape cancels naming.
+**Rename** and **Delete** apply to user presets; deletion asks for confirmation and selects **Broadcaster 1**.
 
 Switching presets within the same NR method updates processing without restarting
 the engine. Changing between Standard and Advanced rebuilds the audio path.
@@ -129,6 +138,7 @@ values and source revision independently of the factory originals.
 If that backup name already contains different data, the new backup gets a unique
 suffix so both originals remain available.
 
+Open **Settings** (⌘,) for **Launch at login**, **Back Up**, and **Restore**.
 **Back Up** exports the user preset library, factory NR method choices, selection,
 factory catalog revision, and device setting to JSON. **Restore** validates a backup before asking to
 replace the current library. It preserves the previous settings file as

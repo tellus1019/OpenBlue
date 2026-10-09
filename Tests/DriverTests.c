@@ -36,9 +36,47 @@ static void check(AudioObjectID obj, AudioObjectPropertySelector sel,
                                    buffer) == 0 &&
          actual == bytes);
 }
-int main(void) {
+static void latency(void) {
+  UInt32 actual;
+  AudioObjectPropertyAddress latency_address = {kAudioDevicePropertyLatency,
+      kAudioObjectPropertyScopeInput, kAudioObjectPropertyElementMain};
+  UInt32 input_latency = 0;
+  assert(get(driver, DEVICE, 0, &latency_address, 0, NULL,
+             sizeof(input_latency), &actual, &input_latency) == 0);
+  assert(input_latency == 64 && input_latency == OB_LOOP_DELAY);
+  float input[512], output[512];
+  for (unsigned i = 0; i < 512; ++i)
+    input[i] = (float)i / 512;
+  AudioServerPlugInIOCycleInfo cycle = {0};
+  cycle.mOutputTime.mSampleTime = 10000;
+  cycle.mInputTime.mSampleTime = 10000 + OB_LOOP_DELAY;
+  assert(io(driver, DEVICE, OUTPUT, 1, kAudioServerPlugInIOOperationWriteMix,
+            256, &cycle, input, NULL) == 0);
+  assert(io(driver, DEVICE, INPUT, 2, kAudioServerPlugInIOOperationReadInput,
+            256, &cycle, output, NULL) == 0);
+  assert(memcmp(input, output, sizeof(input)) == 0);
+  ob_loop_clear(&loop);
+  // Read first at each 48-frame callback: all delayed samples must already exist.
+  for (unsigned t = 0; t < 4800; t += 48) {
+    cycle.mInputTime.mSampleTime = t;
+    assert(io(driver, DEVICE, INPUT, 2, kAudioServerPlugInIOOperationReadInput,
+              48, &cycle, output, NULL) == noErr);
+    for (unsigned i = 0; i < 48; ++i) {
+      float expected = t+i < 64 ? 0 : (t+i-64+1)*0.0001f;
+      assert(output[2*i] == expected && output[2*i+1] == -expected);
+      input[2*i] = (t+i+1)*0.0001f; input[2*i+1] = -input[2*i];
+    }
+    cycle.mOutputTime.mSampleTime = t;
+    assert(io(driver, DEVICE, OUTPUT, 1, kAudioServerPlugInIOOperationWriteMix,
+              48, &cycle, input, NULL) == noErr);
+  }
+}
+int main(int argc, char **argv) {
   assert(OpenBlue_Create(NULL, kAudioServerPlugInTypeUUID) == driver);
   assert(initialize(driver, &fake_host) == 0);
+  if (argc == 2 && !strcmp(argv[1], "--latency")) {
+    latency(); puts("PASS 64-frame loopback, published latency and read-before-write callbacks"); return 0;
+  }
   for (unsigned o = PLUGIN; o <= OUTPUT; ++o) {
     check(o, kAudioObjectPropertyClass, kAudioObjectPropertyScopeGlobal, 4);
     check(o, kAudioObjectPropertyOwner, kAudioObjectPropertyScopeGlobal, 4);
@@ -138,17 +176,7 @@ int main(void) {
          0);
   assert(CFEqual(text, CFSTR("2")));
   CFRelease(text);
-  float input[512], output[512];
-  for (unsigned i = 0; i < 512; ++i)
-    input[i] = (float)i / 512;
-  AudioServerPlugInIOCycleInfo cycle = {0};
-  cycle.mOutputTime.mSampleTime = 10000;
-  cycle.mInputTime.mSampleTime = 10000 + OB_LOOP_DELAY;
-  assert(io(driver, DEVICE, OUTPUT, 1, kAudioServerPlugInIOOperationWriteMix,
-            256, &cycle, input, NULL) == 0);
-  assert(io(driver, DEVICE, INPUT, 2, kAudioServerPlugInIOOperationReadInput,
-            256, &cycle, output, NULL) == 0);
-  assert(memcmp(input, output, sizeof(input)) == 0);
+  latency();
   assert(stop(driver, DEVICE, 2) == 0 && atomic_load(&running) == 1);
   assert(stop(driver, DEVICE, 1) == 0 && atomic_load(&running) == 0);
   assert(remove_client(driver, DEVICE, &app) == 0 &&

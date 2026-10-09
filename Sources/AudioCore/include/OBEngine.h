@@ -31,8 +31,6 @@ bool ob_engine_processing(OBEngine *engine, const float *values, uint32_t count,
 uint32_t ob_engine_latency(OBEngine *engine);
 OSStatus ob_engine_start(OBEngine *engine);
 void ob_engine_destroy(OBEngine *engine);
-void ob_engine_gain(OBEngine *engine, float db, bool bypass);
-bool ob_engine_parameters(OBEngine *engine, const float *values, uint32_t count);
 // Configure detailed timing only while stopped. Display diagnostics remain available.
 void ob_engine_set_profiling(OBEngine *engine, bool enabled);
 OSStatus ob_engine_error(OBEngine *engine);

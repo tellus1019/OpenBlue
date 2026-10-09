@@ -19,19 +19,19 @@ static void noise_and_onset(float sensitivity, float bias, float release) {
   assert(ob_dsp_update(s, v, OBP_COUNT)); ob_dsp_reset(s);
   unsigned seed = 91;
   double in_noise = 0, out_noise = 0, onset = 0, expected = 0;
-  float noise_history[OB_DSP_LATENCY] = {0}, colored = 0;
+  float noise_history[OB_STANDARD_NR_LATENCY] = {0}, colored = 0;
   for (unsigned i = 0; i < 240000; ++i) {
     // Colored background followed by a quiet voiced onset. No device is opened.
     colored = .85f*colored + .15f*uniform(&seed);
     float noise = .003f*colored;
-    float reference_noise = noise_history[i%OB_DSP_LATENCY];
-    noise_history[i%OB_DSP_LATENCY] = noise;
+    float reference_noise = noise_history[i%OB_STANDARD_NR_LATENCY];
+    noise_history[i%OB_STANDARD_NR_LATENCY] = noise;
     float tone = i >= 144000 && i < 192000 ? .015f*sinf(2*M_PI*997*i/48000) : 0;
     float audio[] = {noise+tone, -.5f*(noise+tone)};
     ob_dsp_process(s, audio, 1);
     assert(isfinite(audio[0]) && isfinite(audio[1]));
     assert(fabsf(audio[1]+.5f*audio[0]) < 1e-6f);
-    int source = (int)i-OB_DSP_LATENCY;
+    int source = (int)i-OB_STANDARD_NR_LATENCY;
     if (source >= 96000 && source < 144000) {
       in_noise += reference_noise*reference_noise; out_noise += audio[0]*audio[0];
     }
@@ -50,7 +50,7 @@ static void noise_and_onset(float sensitivity, float bias, float release) {
 static void delayed_background(void) {
   const unsigned count = 7*48000, fft_size = 512, bins = 257;
   float *input = calloc(count, sizeof(float));
-  float *audio = calloc(2*(count+OB_DSP_LATENCY), sizeof(float));
+  float *audio = calloc(2*(count+OB_STANDARD_NR_LATENCY), sizeof(float));
   assert(input && audio);
   unsigned seed = 183;
   float colored = 0;
@@ -64,13 +64,13 @@ static void delayed_background(void) {
   for (unsigned i = 0; i < OBP_COUNT; ++i) v[i] = ob_parameter_info(i)->initial;
   v[OBP_NR_ON] = 1; v[OBP_NR_RANGE] = 12; v[OBP_NR_RELEASE] = 100;
   assert(ob_dsp_update(s, v, OBP_COUNT)); ob_dsp_reset(s);
-  for (unsigned i = 0; i < count+OB_DSP_LATENCY; i += 256) {
-    unsigned n = count+OB_DSP_LATENCY-i;
+  for (unsigned i = 0; i < count+OB_STANDARD_NR_LATENCY; i += 256) {
+    unsigned n = count+OB_STANDARD_NR_LATENCY-i;
     ob_dsp_process(s, audio+2*i, n < 256 ? n : 256);
   }
   double early_in = 0, early_out = 0;
   for (unsigned i = 117600; i < 124800; ++i) {
-    float y = audio[2*(i+OB_DSP_LATENCY)];
+    float y = audio[2*(i+OB_STANDARD_NR_LATENCY)];
     assert(isfinite(y));
     early_in += input[i]*input[i]; early_out += y*y;
   }
@@ -87,8 +87,8 @@ static void delayed_background(void) {
     ++frames;
     for (unsigned source = 0; source < 2; ++source) {
       for (unsigned j = 0; j < 256; ++j) {
-        real[j] = (source ? audio[2*(i+2*j+OB_DSP_LATENCY)] : input[i+2*j])*window[2*j];
-        imag[j] = (source ? audio[2*(i+2*j+1+OB_DSP_LATENCY)] : input[i+2*j+1])*window[2*j+1];
+        real[j] = (source ? audio[2*(i+2*j+OB_STANDARD_NR_LATENCY)] : input[i+2*j])*window[2*j];
+        imag[j] = (source ? audio[2*(i+2*j+1+OB_STANDARD_NR_LATENCY)] : input[i+2*j+1])*window[2*j+1];
       }
       DSPSplitComplex z = {real, imag};
       vDSP_fft_zrip(fft, &z, 1, 9, FFT_FORWARD);
@@ -115,7 +115,7 @@ static void low_background_and_voice(void) {
   const unsigned count = 8*48000;
   float *input = calloc(count, sizeof(float));
   float *voice = calloc(count, sizeof(float));
-  float *audio = calloc(2*(count+OB_DSP_LATENCY), sizeof(float));
+  float *audio = calloc(2*(count+OB_STANDARD_NR_LATENCY), sizeof(float));
   assert(input && voice && audio);
   unsigned seed = 602;
   float low1 = 0, low2 = 0;
@@ -135,13 +135,13 @@ static void low_background_and_voice(void) {
   for (unsigned i = 0; i < OBP_COUNT; ++i) v[i] = ob_parameter_info(i)->initial;
   v[OBP_NR_ON] = 1; v[OBP_NR_RANGE] = 12; v[OBP_NR_RELEASE] = 100;
   assert(ob_dsp_update(s, v, OBP_COUNT)); ob_dsp_reset(s);
-  for (unsigned i = 0; i < count+OB_DSP_LATENCY; i += 256) {
-    unsigned remaining = count+OB_DSP_LATENCY-i;
+  for (unsigned i = 0; i < count+OB_STANDARD_NR_LATENCY; i += 256) {
+    unsigned remaining = count+OB_STANDARD_NR_LATENCY-i;
     ob_dsp_process(s, audio+2*i, remaining < 256 ? remaining : 256);
   }
   double in = 0, out = 0, projection = 0, reference = 0;
   for (unsigned i = 0; i < count; ++i) {
-    float y = audio[2*(i+OB_DSP_LATENCY)];
+    float y = audio[2*(i+OB_STANDARD_NR_LATENCY)];
     assert(isfinite(y) && fabsf(y) < 1);
     if (i >= 5*48000 && i < 7*48000) {
       in += input[i]*input[i]; out += y*y;

@@ -33,7 +33,7 @@ private final class AdvancedNRProcessor: @unchecked Sendable {
 private actor AdvancedNRLoader {
   static let shared = AdvancedNRLoader()
   func load(modelPath: String, statePath: String) -> Result<AdvancedNRProcessor, Error> {
-    // Serialize preparation even if rapid method changes cancel earlier requests.
+    // Serialize preparation independently of UI and audio callbacks.
     guard !Task.isCancelled else { return .failure(CancellationError()) }
     return Result { try AdvancedNRProcessor(modelPath: modelPath, statePath: statePath) }
   }
@@ -111,19 +111,56 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
   @Published var availableYetis: [AudioDevice] = []
   @Published var settingsError: String?
   @Published var presetMessage: String?
+  @Published var copyNotice: String?
+  @Published var selectedProcessor = 2
   private var engine: OpaquePointer?
   private var advancedProcessor: AdvancedNRProcessor?
   private var modelLoad: Task<Void, Never>?
-  private var modelLoadID: UUID?
   private var engineMode: NoiseReductionMode = .standard
-  @Published private var processingLatency: UInt32 = UInt32(OB_DSP_LATENCY)
+  @Published private var processingLatency: UInt32 = UInt32(OB_STANDARD_NR_LATENCY)
+  private var configuredDSPFrames: UInt32 {
+    let values = settings.dspValues
+    let lookahead = values[Int(OBP_LIMIT_ON.rawValue)] != 0
+      ? UInt32(values[Int(OBP_LIMIT_ATTACK.rawValue)] * 48) : 0
+    return (settings.noiseReductionMode == .advanced
+      ? UInt32(OB_ADVANCED_NR_LATENCY) : UInt32(OB_STANDARD_NR_LATENCY)) + lookahead
+  }
   var processingDelayDescription: String {
-    if settings.noiseReductionMode == .advanced && engine == nil {
-      return "Advanced processing: 60 ms DSP delay plus worker buffering. Device and clock-buffer latency are additional."
+    if engine == nil && settings.noiseReductionMode == .advanced {
+      return String(format: "Advanced processing: %.2f ms DSP delay plus worker buffering. Input buffering and virtual-device latency are additional.",
+                    Double(configuredDSPFrames)/48)
     }
-    let frames = settings.noiseReductionMode == .standard ? UInt32(OB_DSP_LATENCY) : processingLatency
-    return String(format: "Processing delay: %.2f ms (%u frames), including bypass. Device and clock-buffer latency are additional.",
+    let frames = engine == nil ? configuredDSPFrames : processingLatency
+    return String(format: "Processing delay: %.2f ms (%u frames), including bypass. Input buffering and virtual-device latency are additional.",
                   Double(frames)/48, frames)
+  }
+  var latencyLabel: String {
+    if engine == nil && settings.noiseReductionMode == .advanced {
+      return String(format: "%.0f ms + buffer", Double(configuredDSPFrames)/48)
+    }
+    let frames = engine == nil ? configuredDSPFrames : processingLatency
+    return String(format: "%.0f ms", Double(frames) / 48)
+  }
+  var inputDescription: String {
+    guard let device = availableYetis.first(where: { $0.uid == settings.deviceUID }),
+      let rate = nominalSampleRate(device.id) else { return "Blue Yeti" }
+    return String(format: "Blue Yeti · %g kHz", rate / 1000)
+  }
+  var presentation: AudioStatusPresentation {
+    if settingsError != nil { return .init(name: "Settings error", detail: "Open Settings to recover", color: .orange, showsDelay: false) }
+    if !enabled { return .init(name: "Stopped", detail: "Capture off", color: Color(nsColor: .disabledControlTextColor), showsDelay: false) }
+    if !status.hasPrefix("Processing") && !status.hasPrefix("Ready") {
+      let preparing = status.hasPrefix("Preparing")
+      if preparing && engine != nil {
+        return .init(name: "Preparing", detail: "Standard active until Advanced is ready", color: .orange, showsDelay: true)
+      }
+      return .init(name: preparing ? "Preparing" : "Attention", detail: status, color: .orange, showsDelay: false)
+    }
+    let count = "\(consumerCount) " + (consumerCount == 1 ? "process" : "processes")
+    if muteBinding.wrappedValue { return .init(name: "Muted", detail: count, color: .red, showsDelay: true) }
+    if settings.bypass { return .init(name: "Bypassing", detail: count, color: .yellow, showsDelay: true) }
+    if engine != nil { return .init(name: "Processing", detail: count, color: .green, showsDelay: true) }
+    return .init(name: "Standby", detail: "No app is using OpenBlue", color: Color(red: 0.56, green: 0.61, blue: 0.69), showsDelay: false)
   }
   private var engineInput: AudioDeviceID = 0
   private var engineOutput: AudioDeviceID = 0
@@ -134,6 +171,7 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
   private var formatListener: AudioObjectPropertyListenerBlock?
   private var retryTask: Task<Void, Never>?
   private var recovery = RecoveryBackoff()
+  private var audioActivity: NSObjectProtocol?
   private var meterTimer: Timer?
   private var readoutTimer: Timer?
   private var healthTimer: Timer?
@@ -149,7 +187,7 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
   private var failed = false
   private var knownYetiUIDs: Set<String> = []
   private var driverAvailable = false
-  private var consumerCount = 0
+  @Published private(set) var consumerCount = 0
   private let store: SettingsStore
   private let audioLog = Logger(subsystem: "org.openblue.app", category: "AudioLifecycle")
 
@@ -261,6 +299,22 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
   }
   private func applyProcessing() {
     if engineMode != settings.noiseReductionMode {
+      if settings.noiseReductionMode == .advanced && advancedProcessor == nil {
+        // Keep the current route and its controls alive during first-use preparation.
+        if let engine {
+          let applied = settings.dspValues.withUnsafeBufferPointer {
+            ob_engine_processing(engine, $0.baseAddress, UInt32($0.count), settings.advancedReductionDB)
+          }
+          guard applied else {
+            settingsError = "Processing settings could not be applied."
+            enabled = false
+            stopAudio()
+            return
+          }
+        }
+        prepareAdvancedProcessor()
+        return
+      }
       stopAudio()
       engineMode = settings.noiseReductionMode
       failed = false
@@ -268,6 +322,9 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
       return
     }
     if let engine {
+      if settings.noiseReductionMode == .standard && status.hasPrefix("Preparing") {
+        status = "Processing · \(consumerCount) external input process(es)"
+      }
       let applied = settings.dspValues.withUnsafeBufferPointer {
         ob_engine_processing(engine, $0.baseAddress, UInt32($0.count), settings.advancedReductionDB)
       }
@@ -285,9 +342,17 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
       presetMessage = error.localizedDescription
       return false
     }
+    guard candidate != settings else { return true }
     do {
       try store.save(candidate)
+      let source = settings.selectedPreset
+      let copied = settings.isFactorySelected && candidate.userPresets.count > settings.userPresets.count
+        && (candidate.gainDB != settings.gainDB || candidate.bypass != settings.bypass
+          || candidate.processing != settings.processing || candidate.advancedReductionDB != settings.advancedReductionDB)
       settings = candidate
+      if copied {
+        copyNotice = "\(source.name) is a factory preset, so your change was saved as “\(candidate.selectedPreset.name)”. The original is unchanged."
+      } else if source.id != candidate.selectedPresetID { copyNotice = nil }
       applyProcessing()
       return settingsError == nil
     } catch {
@@ -373,6 +438,9 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     }
   }
   func enableAtLaunch() {
+    // Prepare the model even when no client is using the virtual microphone.
+    // This does not open an audio device or request microphone permission.
+    prepareAdvancedProcessor()
     guard !failed, settingsError == nil else { return }
     setEnabled(true)
   }
@@ -466,10 +534,21 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     if engine != nil && (engineInput != input.id || engineOutput != output.id) { stopAudio() }
     guard retryTask == nil else { return }
     if engine == nil {
-      engineMode = settings.noiseReductionMode
-      if engineMode == .advanced && advancedProcessor == nil {
+      if settings.noiseReductionMode == .advanced && advancedProcessor == nil {
         prepareAdvancedProcessor()
-        return
+        guard !failed else { return }
+        // A client arriving during cold preparation must still receive audio.
+        // Keep the requested method saved; completion switches to Advanced.
+        engineMode = .standard
+      } else {
+        engineMode = settings.noiseReductionMode
+      }
+      // Virtual microphone processing remains time-sensitive with all windows closed.
+      let activity = ProcessInfo.processInfo.beginActivity(
+        options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+        reason: "Processing live microphone audio")
+      defer {
+        if engine == nil { ProcessInfo.processInfo.endActivity(activity) }
       }
       var error: OSStatus = 0
       guard let newEngine = ob_engine_create(input.id, output.id, &error) else {
@@ -503,43 +582,59 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
         return
       }
       engine = newEngine
+      audioActivity = activity
       engineInput = input.id
       engineOutput = output.id
       startMonitoring()
       recovery.reset()
       audioLog.info("Audio started: input=\(input.id) output=\(output.id) consumers=\(count) dspDelayFrames=\(self.processingLatency)")
     }
-    status = "Processing · \(count) external input process(es)"
+    status = modelLoad != nil && settings.noiseReductionMode == .advanced && engineMode == .standard
+      ? "Preparing advanced noise reduction; Standard remains active"
+      : "Processing · \(count) external input process(es)"
   }
   private func prepareAdvancedProcessor() {
+    guard advancedProcessor == nil else { return }
+    if enabled && settings.noiseReductionMode == .advanced && consumerCount > 0 {
+      status = engine == nil ? "Preparing advanced noise reduction"
+        : "Preparing advanced noise reduction; Standard remains active"
+    }
     guard modelLoad == nil else { return }
     guard let modelURL = Bundle.main.url(forResource: "DPDFNet8", withExtension: "mlmodelc"),
       let stateURL = Bundle.main.url(forResource: "initial-state", withExtension: "f32", subdirectory: "DPDFNet") else {
-      failed = true
-      status = "Advanced noise reduction resources are missing. Reinstall OpenBlue."
+      if settings.noiseReductionMode == .advanced {
+        failed = true
+        stopAudio()
+        status = "Advanced noise reduction resources are missing. Reinstall OpenBlue."
+      }
       return
     }
-    status = "Preparing advanced noise reduction"
-    let id = UUID()
-    modelLoadID = id
+    let started = ContinuousClock.now
+    audioLog.info("Advanced noise reduction preparation started")
     let modelPath = modelURL.path, statePath = stateURL.path
     modelLoad = Task { [weak self] in
       let result = await AdvancedNRLoader.shared.load(modelPath: modelPath, statePath: statePath)
-      guard !Task.isCancelled, let self, self.modelLoadID == id else { return }
+      guard !Task.isCancelled, let self else { return }
       self.modelLoad = nil
-      self.modelLoadID = nil
       switch result {
       case .success(let processor):
         self.advancedProcessor = processor
-        self.refresh()
+        self.audioLog.info("Advanced noise reduction prepared in \(String(describing: started.duration(to: .now)), privacy: .public)")
+        // Reconcile current intent, not the selection that started preparation.
+        if self.enabled && self.awake && !self.failed && self.settingsError == nil {
+          self.applyProcessing()
+          self.refresh()
+        }
       case .failure(let error):
-        self.failed = true
-        self.status = "Advanced noise reduction: \(error.localizedDescription)"
+        if self.settings.noiseReductionMode == .advanced {
+          self.failed = true
+          self.stopAudio()
+          self.status = "Advanced noise reduction: \(error.localizedDescription)"
+        }
       }
     }
   }
   func stopAudio() {
-    modelLoad?.cancel(); modelLoad = nil; modelLoadID = nil
     meterTimer?.invalidate(); meterTimer = nil
     readoutTimer?.invalidate(); readoutTimer = nil
     healthTimer?.invalidate(); healthTimer = nil
@@ -547,11 +642,19 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     if let engine {
       let stats = ob_engine_diagnostics(engine)
       audioLog.info("Audio stopping: capture=\(stats.captured_frames) dsp=\(stats.signal.output_frames) render=\(stats.render_frames) error=\(stats.error) underruns=\(stats.signal.underruns) overruns=\(stats.signal.overruns)")
+      if stats.signal.advanced_deadline_misses > 0 {
+        audioLog.error("Advanced NR late output: episodes=\(stats.signal.advanced_deadline_misses) frames=\(stats.signal.advanced_late_frames)")
+      }
       if callbackProfiling { logCallbackProfile(ob_engine_stats(engine)) }
       ob_engine_destroy(engine)
     }
     engine = nil
-    advancedProcessor = nil
+    if let audioActivity {
+      ProcessInfo.processInfo.endActivity(audioActivity)
+      self.audioActivity = nil
+    }
+    // Preserve the prepared model across mode changes and client reconnects.
+    // Attaching it to a new engine resets its signal and recurrent histories.
     engineInput = 0
     engineOutput = 0
     meterDisplay.clearLevels()
@@ -598,6 +701,8 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
 
   @objc private func checkHealth(_ timer: Timer) {
     guard let engine else { return }
+    let currentLatency = ob_engine_latency(engine)
+    if currentLatency != processingLatency { processingLatency = currentLatency }
     let error = ob_engine_error(engine)
     if error != noErr {
       scheduleRecovery(error == OB_ADVANCED_NR_ERROR ? "Advanced noise reduction" : "Audio processing", error: error)
@@ -620,13 +725,7 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
   private func updateReadouts() {
     guard let engine else { return }
     meterDisplay.updateReadouts(ob_engine_meters(engine))
-    let stats = ob_engine_diagnostics(engine)
-    let callbackUS = Double(stats.callback_max_ticks) * nanosecondsPerTick / 1000
-    let diagnostics =
-      "Underruns: \(stats.signal.underruns)  Overruns: \(stats.signal.overruns)  Clipped: \(stats.signal.clipped_samples)\nFrames: capture \(stats.captured_frames) → DSP \(stats.signal.output_frames) → render \(stats.render_frames)"
-      + String(format: "\nMax callback: %.1f µs  Invalid DSP samples: %llu",
-               callbackUS, stats.signal.dsp.invalid_samples)
-    meterDisplay.diagnostics.update(diagnostics)
+
   }
   private func logCallbackProfile(_ stats: OBEngineStats) {
     let buckets = withUnsafeBytes(of: stats.output_duration_buckets) {
@@ -640,59 +739,49 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
 
 struct ContentView: View {
   @ObservedObject var model: AudioModel
-  let loginItem: LoginItemModel
+  let showSettings: () -> Void
   var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 22) {
-        HStack {
-          Text("OpenBlue").font(.largeTitle.bold())
-          Spacer()
-          Text("YETI").foregroundStyle(.secondary)
-        }
-        Text(model.status).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        if let error = model.settingsError {
-          Text(error).foregroundStyle(.red)
-          Text("The original file is preserved. Restore a known-good backup, or open the settings folder to keep a copy and recover the file. Use a compatible OpenBlue version for newer settings.")
-            .font(.caption).foregroundStyle(.secondary)
-        }
-        PresetControls(model: model)
-        if model.availableYetis.count > 1 {
-          Picker(
-            "Yeti",
-            selection: Binding(get: { model.settings.deviceUID ?? "" }, set: { model.select($0) })
-          ) {
-            ForEach(model.availableYetis) { Text($0.uid).tag($0.uid) }
+    VStack(spacing: 0) {
+      MainTitlebar(model: model)
+      HStack(spacing: 0) {
+        PresetControls(model: model).frame(width: 236)
+        Rectangle().fill(UIStyle.line).frame(width: 1)
+        VStack(spacing: 0) {
+          MainMeterRow(model: model)
+          if let error = model.settingsError {
+            HStack {
+              Text(error).font(.system(size: 12)).foregroundStyle(.orange)
+              Spacer()
+              Button("Open Settings…", action: showSettings)
+            }.padding(.horizontal, 20).padding(.bottom, 10)
+          } else if model.presentation.name == "Attention" {
+            Text(model.status).font(.system(size: 12)).foregroundStyle(.orange)
+              .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.bottom, 10)
           }
-        }
-        Toggle(
-          "Enable OpenBlue", isOn: Binding(get: { model.enabled }, set: { model.setEnabled($0) })
-        )
-        .toggleStyle(.switch).disabled(model.settingsError != nil)
-        VStack(alignment: .leading) {
-          HStack {
-            Text("Input gain")
+          if model.availableYetis.count > 1 {
+            Picker("Yeti", selection: Binding(get: { model.settings.deviceUID ?? "" }, set: { model.select($0) })) {
+              ForEach(model.availableYetis) { Text($0.uid).tag($0.uid) }
+            }.padding(.horizontal, 20).padding(.bottom, 10)
+          }
+          HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(model.settings.selectedPreset.name).font(.system(size: 20, weight: .semibold)).lineLimit(1)
+            PresetBadge(text: model.presetGroup)
             Spacer()
-            Text(String(format: "%.1f dB", model.settings.gainDB)).monospacedDigit()
+            Text("\(model.processorCount) of 8 processors on").font(.system(size: 11.5)).foregroundStyle(.tertiary)
+          }.padding(.horizontal, 22).padding(.top, 6).padding(.bottom, 10)
+          if let notice = model.copyNotice {
+            HStack(spacing: 10) {
+              Text(notice).font(.system(size: 12)).frame(maxWidth: .infinity, alignment: .leading)
+              Button("OK") { model.copyNotice = nil }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
+            }.padding(.vertical, 9).padding(.horizontal, 12)
+              .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+              .padding(.horizontal, 20).padding(.bottom, 10)
           }
-          ParameterSlider(
-            value: Binding(
-              get: { model.settings.gainDB },
-              set: { value in _ = model.changePreset { $0.gainDB = value } }), bounds: -24...12, step: 0.5)
-          Toggle(
-            "Bypass all processing",
-            isOn: Binding(
-              get: { model.settings.bypass },
-              set: { value in _ = model.changePreset { $0.bypass = value } }))
-        }.disabled(model.settingsError != nil)
-        MeterPanel(display: model.meterDisplay)
-        ProcessingEditor(model: model)
-        StartupSettings(loginItem: loginItem)
-        Text(
-          "Choose OpenBlue as the input in your recording or meeting app. Keep OpenBlue running. Audio stays on this Mac."
-        )
-        .font(.callout).foregroundStyle(.secondary)
-      }.padding(28)
-    }.frame(width: 600, height: 760)
+          ProcessingEditor(model: model).padding(.horizontal, 20).padding(.bottom, 20)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+      }
+    }.background(UIStyle.window).ignoresSafeArea()
+      .frame(minWidth: 1000, minHeight: 700)
       .background(MeterWindowObserver(model: model))
   }
 }
@@ -702,8 +791,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   lazy var model = AudioModel()
   private let loginItem = LoginItemModel()
   private let aboutWindow = AboutWindowController()
+  let quickAccessWindow = InterfaceWindowReference()
   private lazy var mainWindow = MainWindowController { [self] in
-    NSHostingView(rootView: ContentView(model: model, loginItem: loginItem))
+    let host = NSHostingView(rootView: ContentView(model: model, showSettings: { [weak self] in self?.showSettingsWindow() }))
+    // The window owns its size and minimum; live readouts must not measure the
+    // entire editor to derive new intrinsic, minimum, and maximum sizes.
+    host.sizingOptions = []
+    return host
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
@@ -711,9 +805,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     model.enableAtLaunch()
   }
 
-  func showMainWindow() { mainWindow.show() }
+  private var settingsWindow: NSWindow?
+  func showSettingsWindow() {
+    quickAccessWindow.window?.orderOut(nil)
+    if settingsWindow == nil {
+      let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 370),
+        styleMask: [.titled, .closable], backing: .buffered, defer: false)
+      window.title = "OpenBlue Settings"
+      window.isReleasedWhenClosed = false
+      window.isRestorable = false
+      window.contentView = NSHostingView(rootView: OpenBlueSettings(model: model, loginItem: loginItem))
+      window.center()
+      settingsWindow = window
+    }
+    settingsWindow?.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+  }
+  func showMainWindow() { quickAccessWindow.window?.orderOut(nil); mainWindow.show() }
   func closeMainWindow() { NSApp.keyWindow?.performClose(nil) }
-  func showAboutWindow() { aboutWindow.show() }
+  func showAboutWindow() { quickAccessWindow.window?.orderOut(nil); aboutWindow.show() }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
@@ -727,21 +837,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationWillTerminate(_ notification: Notification) { model.stopAudio() }
 }
 
-private struct StatusMenu: View {
-  @ObservedObject var model: AudioModel
-  let delegate: AppDelegate
-
-  var body: some View {
-    Text(model.status)
-    Toggle("Enable OpenBlue", isOn: Binding(
-      get: { model.enabled }, set: { model.setEnabled($0) }))
-      .disabled(model.settingsError != nil)
-    Button("Show OpenBlue") { delegate.showMainWindow() }
-    Button("About OpenBlue") { delegate.showAboutWindow() }
-    Divider()
-    Button("Quit OpenBlue") { NSApp.terminate(nil) }
-  }
-}
 @main struct OpenBlueApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
   init() {
@@ -768,12 +863,18 @@ private struct StatusMenu: View {
     }
   }
   var body: some Scene {
-    MenuBarExtra("OpenBlue", image: "MenuBarIcon") {
-      StatusMenu(model: delegate.model, delegate: delegate)
+    MenuBarExtra {
+      QuickAccess(model: delegate.model, delegate: delegate)
+    } label: {
+      MenuBarLabel(model: delegate.model)
     }
+    .menuBarExtraStyle(.window)
     .commands {
       CommandGroup(replacing: .appInfo) {
         Button("About OpenBlue") { delegate.showAboutWindow() }
+      }
+      CommandGroup(replacing: .appSettings) {
+        Button("Settings…") { delegate.showSettingsWindow() }.keyboardShortcut(",", modifiers: .command)
       }
       CommandGroup(replacing: .newItem) {
         Button("Close Window") { delegate.closeMainWindow() }

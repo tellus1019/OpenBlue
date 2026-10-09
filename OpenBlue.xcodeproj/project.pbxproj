@@ -50,7 +50,7 @@
 		"438F94C22489F8688CF8AC4A" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "ProcessingDisclosureStyle.swift";
+			"path" = "InterfaceComponents.swift";
 			"sourceTree" = "<group>";
 		};
 		"505E60F6BF04B35433ABBDE6" = {
