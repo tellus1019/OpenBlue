@@ -42,7 +42,7 @@ int main(void) {
   printf("audio_seconds=10 rate=48000 block=256 stereo=2 all_processors=enabled\n");
   printf("cpu_seconds=%.6f single_core_equivalent_percent=%.3f max_block_us=%.3f checksum=%.9f\n",
          cpu_seconds()-start,(cpu_seconds()-start)*10,maximum/1000.0,sum);
-  printf("kernel_storage_bytes=%zu algorithmic_latency_frames=%d\n",sizeof(*s),OB_DSP_LATENCY);
+  printf("kernel_storage_bytes=%zu algorithmic_latency_frames=%u\n",sizeof(*s),ob_dsp_latency_frames(s));
 #ifdef OB_DSP_PROFILE
   mach_timebase_info_data_t timebase;
   mach_timebase_info(&timebase);

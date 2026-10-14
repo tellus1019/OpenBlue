@@ -9,6 +9,7 @@
 static void drift(double ppm, unsigned input_block, unsigned output_block) {
   OBSignal *s = ob_signal_create();
   assert(s);
+  assert(ob_signal_set_input_frames(s,input_block));
   float in[2048], out[2048];
   double next_input = 0, next_output = 0;
   double previous_jitter = 0;
@@ -22,6 +23,7 @@ static void drift(double ppm, unsigned input_block, unsigned output_block) {
         in[i * 2] = 0.2f * sinf((captured + i) * 2 * M_PI * 997 / 48000);
         in[i * 2 + 1] = 0.1f * sinf((captured + i) * 2 * M_PI * 1733 / 48000);
       }
+      ob_signal_input_time(s, (double)captured, 1 + captured / (48000 * (1 + ppm / 1e6)));
       assert(ob_signal_push(s, in, input_block));
       captured += input_block;
       double jitter = (++callback % 2 ? 0.0005 : -0.0005);
@@ -29,6 +31,7 @@ static void drift(double ppm, unsigned input_block, unsigned output_block) {
                     previous_jitter;
       previous_jitter = jitter;
     } else {
+      ob_signal_output_time(s, next_output * 48000, 1 + next_output);
       ob_signal_render(s, out, output_block);
       for (unsigned i = 0; i < output_block * 2; ++i)
         assert(isfinite(out[i]) && fabsf(out[i]) <= 1);
@@ -42,11 +45,13 @@ static void drift(double ppm, unsigned input_block, unsigned output_block) {
   assert(stats.underruns == 0 && stats.overruns == 0 &&
          stats.output_frames > 48000 * 119);
   assert(stats.buffered_frames > 16 && stats.buffered_frames < 4096);
+  ob_signal_reset(s);
   ob_signal_destroy(s);
 }
 static void gain(void) {
   OBSignal *s = ob_signal_create();
-  float in[1024], out[1024];
+  float in[1024], out[1024], parameters[OBP_COUNT];
+  for (unsigned i = 0; i < OBP_COUNT; ++i) parameters[i] = ob_parameter_info(i)->initial;
   for (unsigned i = 0; i < 512; ++i) {
     in[2 * i] = 0.2f;
     in[2 * i + 1] = -0.1f;
@@ -54,25 +59,57 @@ static void gain(void) {
   assert(ob_signal_push(s, in, 512));
   assert(ob_signal_push(s, in, 512));
   assert(ob_signal_push(s, in, 512));
-  ob_signal_gain(s, 6.0206f, false);
+  parameters[OBP_INPUT_GAIN] = 6.0206f;
+  assert(ob_signal_processing(s, parameters, OBP_COUNT, 40));
   for (unsigned b = 0; b < 40; ++b) {
     assert(ob_signal_push(s, in, 512));
     ob_signal_render(s, out, 512);
   }
   assert(fabs(out[100] - 0.4) < 0.00001 && fabs(out[101] + 0.2) < 0.00001);
-  ob_signal_gain(s, 0, true);
+  parameters[OBP_INPUT_GAIN] = 0; parameters[OBP_BYPASS] = 1;
+  assert(ob_signal_processing(s, parameters, OBP_COUNT, 40));
   for (unsigned b = 0; b < 40; ++b) {
     assert(ob_signal_push(s, in, 512));
     ob_signal_render(s, out, 512);
   }
   assert(fabs(out[100] - 0.2) < 0.00001 && fabs(out[101] + 0.1) < 0.00001);
-  ob_signal_gain(s, NAN, false);
+  parameters[OBP_INPUT_GAIN] = NAN; parameters[OBP_BYPASS] = 0;
+  assert(!ob_signal_processing(s, parameters, OBP_COUNT, 40));
   assert(ob_signal_push(s, in, 512));
   ob_signal_render(s, out, 512);
   assert(fabs(out[100] - 0.2) < 0.00001);
   ob_signal_destroy(s);
 }
 static OBLoopback ring;
+static void band_meters(void) {
+  for (unsigned stage = 0; stage < 2; ++stage) {
+    OBSignal *s = ob_signal_create();
+    float parameters[OBP_COUNT];
+    for (unsigned i = 0; i < OBP_COUNT; ++i) parameters[i] = ob_parameter_info(i)->initial;
+    parameters[stage ? OBP_POPPER_ON : OBP_ESSER_ON] = 1;
+    parameters[stage ? OBP_POPPER_THRESHOLD : OBP_ESSER_THRESHOLD] = -40;
+    assert(ob_signal_processing(s, parameters, OBP_COUNT, 40));
+    float in[512], out[512];
+    double hz = stage ? 150 : 6000;
+    for (unsigned b = 0; b < 220; ++b) {
+      for (unsigned i = 0; i < 256; ++i)
+        in[2*i] = in[2*i+1] = .2f*sin(2*M_PI*hz*(b*256+i)/48000);
+      assert(ob_signal_push(s, in, 256));
+      if (b >= 8) ob_signal_render(s, out, 256);
+    }
+    OBMeterValues meters = ob_signal_meters(s);
+    float active = stage ? meters.de_popper_reduction : meters.de_esser_reduction;
+    float inactive = stage ? meters.de_esser_reduction : meters.de_popper_reduction;
+    assert(active > 11.9f && active <= 12.001f && inactive == 0);
+    assert(meters.input_raw_peak > .19f && meters.output_raw_peak < .06f);
+    assert(meters.compressor_reduction == 0 && meters.limiter_reduction == 0);
+    ob_signal_reset(s);
+    meters = ob_signal_meters(s);
+    assert(meters.de_esser_reduction == 0 && meters.de_popper_reduction == 0);
+    ob_signal_destroy(s);
+  }
+  puts("PASS band reduction meter routing and reset");
+}
 static void meters(void) {
   OBSignal *s = ob_signal_create();
   float in[960], out[960];
@@ -121,6 +158,30 @@ static void meters(void) {
   assert(ob_signal_stats(s).input_peak == 0 && ob_signal_stats(s).output_peak == 0);
   assert(ob_signal_meters(s).input_raw_peak == 0 && ob_signal_meters(s).output_raw_peak == 0);
   ob_signal_destroy(s);
+}
+static void stereo_meters(void) {
+  OBSignal *s = ob_signal_create();
+  float input[960], output[960];
+  for (unsigned i = 0; i < 480; ++i) {
+    input[2 * i] = 0.6f;
+    input[2 * i + 1] = -0.15f;
+  }
+  for (unsigned i = 0; i < 4; ++i) assert(ob_signal_push(s, input, 480));
+  for (unsigned i = 0; i < 20; ++i) {
+    assert(ob_signal_push(s, input, 480));
+    ob_signal_render(s, output, 480);
+  }
+  OBMeterValues m = ob_signal_meters(s);
+  assert(fabsf(m.input_left - 0.6f) < 0.00001f);
+  assert(fabsf(m.input_right - 0.15f) < 0.00001f);
+  assert(fabsf(m.output_left - 0.6f) < 0.00001f);
+  assert(fabsf(m.output_right - 0.15f) < 0.00001f);
+  assert(m.input_raw_peak == m.input_left && m.output_raw_peak == m.output_left);
+  ob_signal_reset(s);
+  m = ob_signal_meters(s);
+  assert(m.input_left == 0 && m.input_right == 0 && m.output_left == 0 && m.output_right == 0);
+  ob_signal_destroy(s);
+  puts("PASS independent stereo display peaks and reset");
 }
 static void starvation(void) {
   OBSignal *s = ob_signal_create();
@@ -186,10 +247,24 @@ static void *reader(void *unused) {
   return NULL;
 }
 int main(int argc, char **argv) {
+  if (argc == 2 && !strcmp(argv[1], "--controls")) {
+    gain(); band_meters(); puts("PASS signal control updates and invalid input retention"); return 0;
+  }
+  if (argc == 2 && !strcmp(argv[1], "--latency")) {
+    drift(-66, 128, 48);
+    drift(66, 128, 48);
+    loopback();
+    starvation();
+    puts("PASS reduced FIFO startup, drift, starvation and loopback delay");
+    return 0;
+  }
   if (argc == 2 && !strcmp(argv[1], "--meters")) { meters(); return 0; }
+  if (argc == 2 && !strcmp(argv[1], "--band-meters")) { band_meters(); return 0; }
   if (argc == 2 && !strcmp(argv[1], "--starvation")) { starvation(); return 0; }
   gain();
   meters();
+  band_meters();
+  stereo_meters();
   loopback();
   starvation();
   ob_loop_clear(&ring);
@@ -200,8 +275,10 @@ int main(int argc, char **argv) {
   pthread_join(w, NULL);
   pthread_join(r1, NULL);
   pthread_join(r2, NULL);
-  drift(-1000, 512, 256);
-  drift(1000, 256, 512);
+  drift(-66, 128, 48);
+  drift(66, 128, 48);
+  drift(-66, 512, 256);
+  drift(66, 256, 512);
   drift(0, 128, 128);
   puts("PASS signal, drift, timestamp loopback and simultaneous readers");
 }

@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #define OB_LOOP_CAPACITY 32768u
-#define OB_LOOP_DELAY 1024u
+#define OB_LOOP_DELAY 64u
 typedef struct {
   _Atomic uint64_t stamp, samples;
 } OBFrame;

@@ -30,8 +30,8 @@ static void suspended_audio(void) {
   dc(s, 8192);
   assert_sleeping(s);
   // With every processor off, arbitrary audio still has exactly the fixed delay.
-  float history[OB_DSP_LATENCY][2];
-  for (unsigned i = 0; i < OB_DSP_LATENCY; ++i) {
+  float history[OB_STANDARD_NR_LATENCY][2];
+  for (unsigned i = 0; i < OB_STANDARD_NR_LATENCY; ++i) {
     history[i][0] = .1f; history[i][1] = -.05f;
   }
   for (unsigned i = 0; i < 8192; ++i) {
@@ -39,12 +39,12 @@ static void suspended_audio(void) {
     float input[] = {audio[0], audio[1]};
     ob_dsp_process(s, audio, 1);
     for (unsigned ch = 0; ch < 2; ++ch) {
-      assert(audio[ch] == history[i%OB_DSP_LATENCY][ch]);
-      history[i%OB_DSP_LATENCY][ch] = input[ch];
+      assert(audio[ch] == history[i%OB_STANDARD_NR_LATENCY][ch]);
+      history[i%OB_STANDARD_NR_LATENCY][ch] = input[ch];
     }
   }
   // Delay rings advance while the expensive processing state stays untouched.
-  for (unsigned f = 0; f < 8; ++f)
+  for (unsigned f = 0; f < 6; ++f)
     for (unsigned ch = 0; ch < 2; ++ch)
       assert(s->filters[f].x1[ch] == 0 && s->filters[f].y1[ch] == 0);
   assert(s->gate_detector == 0 && s->comp_detector == 0 &&
@@ -113,7 +113,7 @@ static void preset_while_sleeping(void) {
   assert(ob_dsp_update(s, v, OBP_COUNT));
   dc(s, 12000);
   assert_sleeping(s);
-  Filter saved[8]; memcpy(saved, s->filters, sizeof(saved));
+  Filter saved[6]; memcpy(saved, s->filters, sizeof(saved));
   float spectrum[2][FFT_N/2]; memcpy(spectrum, s->real, sizeof(spectrum));
   float envelope = s->comp_detector;
   uint64_t queue = s->queue_tail;
@@ -129,7 +129,7 @@ static void preset_while_sleeping(void) {
   for (unsigned g = 1; g < OB_DSP_GROUPS; ++g) v[switches[g]] = 1;
   assert(ob_dsp_update(s, v, OBP_COUNT));
   dc(s, 1);
-  for (unsigned f = 0; f < 8; ++f)
+  for (unsigned f = 0; f < 6; ++f)
     assert(!memcmp(&s->filters[f].c, &s->slots[s->front].filters[f], sizeof(Coeff)));
   dc(s, 12000);
   for (unsigned g = 1; g < OB_DSP_GROUPS; ++g)
@@ -202,9 +202,40 @@ static void block_partitioning(void) {
   puts("PASS steady processing and transitions preserve audio across block sizes");
 }
 
+static void noise_learning_independence(void) {
+  OBDSP *mild = ob_dsp_create(), *strong = ob_dsp_create();
+  assert(mild && strong);
+  float v[OBP_COUNT]; defaults(v);
+  v[OBP_NR_ON] = 1; v[OBP_NR_BIAS] = 0; v[OBP_NR_RANGE] = 0;
+  assert(ob_dsp_update(mild, v, OBP_COUNT)); ob_dsp_reset(mild);
+  v[OBP_NR_BIAS] = 5; v[OBP_NR_SENSITIVITY] = 40; v[OBP_NR_RANGE] = 60;
+  assert(ob_dsp_update(strong, v, OBP_COUNT)); ob_dsp_reset(strong);
+  unsigned seed = 309;
+  float colored = 0;
+  for (unsigned block = 0; block < 600; ++block) {
+    float a[512], b[512];
+    for (unsigned i = 0; i < 256; ++i) {
+      seed = seed*1664525u + 1013904223u;
+      colored = .99f*colored + .01f*((seed>>8)/8388608.f-1);
+      float x = .1f*colored;
+      if (block >= 200 && block < 400)
+        x += .02f*sinf(2*M_PI*220*(block*256+i)/48000);
+      a[2*i] = a[2*i+1] = b[2*i] = b[2*i+1] = x;
+    }
+    ob_dsp_process(mild, a, 256); ob_dsp_process(strong, b, 256);
+    // Suppression controls may change the sound, but cannot teach the noise
+    // tracker a different background from identical input.
+    for (unsigned k = 0; k < NR_BINS; ++k)
+      assert(mild->noise.noise[k] == strong->noise.noise[k]);
+  }
+  ob_dsp_destroy(mild); ob_dsp_destroy(strong);
+  puts("PASS background learning is independent of suppression controls");
+}
+
 int main(void) {
   suspended_audio();
   wake_and_cancel();
   preset_while_sleeping();
   block_partitioning();
+  noise_learning_independence();
 }

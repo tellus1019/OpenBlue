@@ -1,0 +1,15 @@
+Third-Party Software and Models
+
+DPDFNet
+Ceva Inc.
+Source: https://github.com/ceva-ip/DPDFNet
+Model source: https://huggingface.co/Ceva-IP/DPDFNet
+License: Apache License 2.0; see DPDFNet-Apache-2.0.txt.
+
+Core ML conversion reference
+DeepFilterNet-mlx
+Copyright 2026 Kyle Howells
+Source: https://github.com/kylehowells/DeepFilterNet-mlx
+See CoreML-Conversion-MIT.txt and CoreML-Conversion-NOTICE.txt.
+
+The deployment graph is converted to Core ML with explicit recurrent-state inputs and outputs.

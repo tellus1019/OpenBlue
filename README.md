@@ -1,13 +1,20 @@
-# OpenBlue
+<h1>
+  <img src="Resources/Branding/openblue-logo-horizontal.svg#gh-light-mode-only" alt="OpenBlue" width="320">
+  <img src="Resources/Branding/openblue-logo-horizontal-dark.svg#gh-dark-mode-only" alt="OpenBlue" width="320">
+</h1>
+
 OpenBlue is a native macOS application for the original Blue Yeti.
 Its goal is local voice processing and a virtual microphone without Logitech G HUB.
 
 ## Build and test
 
-An Apple Silicon Mac with Xcode and its command-line tools is required.
-The deployment minimum is macOS 14; current builds are checked with SDK 26.5.
+An Apple Silicon Mac with Xcode 26 or later and its command-line tools is required.
+The deployment minimum is macOS 15; current builds are checked with SDK 27.0.
+The app is built with the OpenBlue Xcode scheme; internal modules use local Swift packages.
 Compatibility with other OS versions has not been established.
-There are no external package dependencies.
+There are no external package dependencies. Advanced noise reduction bundles a
+DPDFNet8 HR model and runs locally with Core ML and Accelerate. Third-party
+notices are available from **About OpenBlue → Third-Party Licenses**.
 
 ```sh
 bash Scripts/build.sh debug
@@ -25,6 +32,9 @@ These commands only build and test local artifacts. They do not install or
 remove software, register services, launch the app, capture a microphone,
 change the default audio device, or restart anything.
 Bundles are ad-hoc signed for local development, not notarized for distribution.
+
+Debug builds include local logs and diagnostic tools for troubleshooting.
+Release builds omit these features.
 
 ## Installation boundary
 
@@ -45,17 +55,34 @@ affect other Logitech peripherals.
 1. Connect the original Yeti through the standard macOS USB audio driver.
 2. Set its format to 48 kHz stereo in Audio MIDI Setup if needed. OpenBlue does
    not change the hardware format automatically.
-3. Open the installed application and explicitly enable OpenBlue. It requests
-   microphone access, not access to Documents or other personal folders.
+3. Open the installed application. OpenBlue starts enabled in the menu bar,
+   without a window or Dock icon. It requests microphone access, not access to
+   Documents or other personal folders. Choose **Show OpenBlue** from the menu
+   bar to display the processing window and Dock icon.
 4. Select **OpenBlue** as the microphone input in another application.
-5. Adjust input and output gain between -24 and +12 dB. Expand a processor
-   to adjust its parameters and use its switch to enable it. All new processors
-   start disabled. See [Processing controls](Documentation/Processing.md).
-6. Use **Bypass all processing** to compare with the unprocessed signal.
-   The chain adds 608 frames (12.67 ms at 48 kHz), including when bypassed.
-   Bypass retains clock alignment, fixed delay, and final full-scale clipping.
-7. Keep OpenBlue running. Closing the window leaves it in the menu bar;
-   disabling or quitting it stops capture. It does not launch at login.
+5. Adjust **Input gain** from -24 to +12 dB and **Output** from -80
+   to 0 dB. Master output and **Mute** act after the limiter. Select a
+   processor chip to edit its parameters, including while it is off. Use its
+   switch to turn processing on or off. Factory presets
+   have individual settings; new user presets start with processors disabled.
+   Noise reduction offers **Standard** and **Advanced** methods. Advanced NR
+   has a separate maximum-reduction control and needs no network connection.
+   See [Processing controls](Documentation/Processing.md).
+6. Use **Bypass** to compare with the unprocessed signal.
+   Master output and mute remain active. Standard NR retains 512 frames of
+   spectral delay. Advanced NR retains 2400 frames of model delay plus worker
+   buffering of 888 frames and one output callback. Limiter lookahead matches
+   Attack (0–10 ms) and becomes zero after the limiter fades out. Lookahead
+   changes crossfade over 5 ms, keeping the bypass path aligned. The processing
+   window displays the current DSP and worker delay; input buffering and
+   virtual-device latency are additional. Advanced noise reduction provides
+   end-to-end latency of 80 ms or less. Clock alignment and final clipping
+   remain active.
+7. Keep OpenBlue running. Closing the window also removes its Dock icon while
+   leaving it in the menu bar; disabling or quitting it stops capture. Turn on
+   **Launch at login** under **Startup** in **Settings** (⌘,) to start it
+   automatically at login, without a window or Dock icon. This option is off
+   until registered; macOS may require approval in Login Items settings.
 
 Capture runs only when enabled and an external input process is using the virtual
 device. Activity comes from Core Audio process objects and input activity
@@ -64,39 +91,64 @@ not windows or browser tabs. Do not select its output for system playback:
 it is the feed into the virtual microphone, not a speaker.
 The virtual input supplies silence when no matching audio is available.
 
-While the processing window is visible, meter bars target 60 updates per second
-with three-frame linear interpolation in both directions. Input and output bars
+While the processing window or Quick Access is visible, stereo meter bars target
+60 updates per second with three-frame linear interpolation in both directions. Input and output bars
 use the latest rendered block peaks; their numeric readouts use an immediate-attack,
 200 dB/second release envelope and update five times per second. Display polling
-stops when the window is not visible. These are level indicators, not calibrated
+stops when neither surface is visible. These are level indicators, not calibrated
 loudness meters. Meter smoothing does not alter audio.
 
 ## Presets and recovery
 
-Choose a preset above the processing controls. **New** starts with the default
-processing values; **Duplicate** copies every value from the selected preset.
-Enter a unique name and choose **Save**. **Rename** changes the selected name;
-**Delete** asks for confirmation and selects the first remaining preset.
-The last preset cannot be deleted.
+Choose a preset in the sidebar or Quick Access. The factory library includes
+**Flat**, **AM**, **Bass Boost**, **Broadcaster 1**, **Broadcaster 2**, **Classic Radio**,
+**Crisp and Warm**, **FM**, **High Voice - Loud**, **High Voice - Soft**,
+**Low Voice - Loud**, **Low Voice - Soft**, and **Warm and Vintage**.
+Flat provides an unprocessed starting point: all processors are disabled, input
+and master output gains are 0 dB, and mute and bypass are off.
+The other presets use OpenBlue's processing; they do not reproduce G HUB's output exactly.
+The initial selection is **Broadcaster 1**.
 
-Edits to gain, bypass, and processor controls are saved automatically to the
-selected preset. Switching presets applies all of its processing values together
-without restarting the audio engine. The selected Yeti is shared by all presets.
+Factory originals cannot be overwritten, renamed, or deleted. Changing a value
+or toggle first creates an editable user copy; further edits save to that copy
+automatically. Switching only the NR method retains the factory preset, and
+writing an unchanged value does not create a copy.
+**New** creates a user preset with default values
+and processors disabled. **Duplicate** copies the selected preset's values.
+Both actions create the preset immediately and begin inline naming. Enter a unique
+name and press Return or leave the field to save; Escape cancels naming.
+**Rename** and **Delete** apply to user presets; deletion asks for confirmation and selects **Broadcaster 1**.
 
-Presets, selection, and Yeti UID are saved atomically in
-`~/Library/Application Support/OpenBlue/settings.json`. Enable state is not
-persisted; every launch starts disabled. Schema 1 and schema 2 migrate to schema 3
-as a single **Current Settings** preset, preserving existing values and device
-selection. Schema-1 processors start disabled with output gain at 0 dB.
-The first save preserves the original bytes in `settings.json.schema1-backup`
-or `settings.json.schema2-backup` before writing schema 3.
+Switching presets within the same NR method updates processing without restarting
+the engine. Changing between Standard and Advanced rebuilds the audio path.
+Each preset retains separate Standard NR parameters and an Advanced maximum
+reduction. Switching methods preserves both sets of values and does not enable
+a disabled processor. The selected method is remembered per preset, including
+factory presets. Existing schema 4 settings retain their user preset values;
+presets without a saved method use Standard. Factory presets use an Advanced
+maximum reduction of 40 dB. The selected Yeti is shared by all presets.
+User presets, factory NR method choices, selection, catalog revision, and Yeti
+UID are saved atomically in
+`~/Library/Application Support/OpenBlue/settings.json` using schema 4.
+Enable state is not persisted; every launch starts enabled, subject to microphone
+permission and valid settings.
 
-**Back Up** exports the entire preset library, selection, and device setting to
-a JSON file. **Restore** validates a backup before asking to replace the current
-library. It preserves the previous settings file as
+Valid schema 1, 2, and 3 settings reset their old test presets to **Broadcaster 1**
+and retain device selection. Before the first save, the original bytes are
+preserved in `settings.json.schema1-backup`, `settings.json.schema2-backup`, or
+`settings.json.schema3-backup`. User copies in schema 4 store their complete
+values and source revision independently of the factory originals.
+If that backup name already contains different data, the new backup gets a unique
+suffix so both originals remain available.
+
+Open **Settings** (⌘,) for **Launch at login**, **Back Up**, and **Restore**.
+**Back Up** exports the user preset library, factory NR method choices, selection,
+factory catalog revision, and device setting to JSON. **Restore** validates a backup before asking to
+replace the current library. It preserves the previous settings file as
 `settings.json.before-restore-<unique ID>.json`, then restores the backup and
 disables audio. Enable OpenBlue again when ready. Restore replaces the library;
-it does not merge presets. Legacy settings files can also be restored.
+it does not merge presets. Restoring legacy files performs the same preset
+reset described above. Unsupported catalog revisions are preserved as errors.
 
 Invalid or newer settings show an error and are not overwritten by ordinary
 saving. Use **Restore** to recover a known-good backup, or **Settings Folder** to

@@ -77,6 +77,9 @@ Desktop.ini
 /research/
 /recordings/
 
+# Private brand source assets
+/BrandAssets/
+
 # Secrets and signing material
 .env
 .env.*

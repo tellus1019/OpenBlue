@@ -35,7 +35,7 @@ final class SettingsTests: XCTestCase {
 }
 
 extension SettingsTests {
-  func testLegacyMigrationPreservesOriginalAndEverySetting() throws {
+  func testLegacyResetPreservesOriginalAndDevice() throws {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: folder) }
@@ -43,11 +43,11 @@ extension SettingsTests {
     let old = Data(#"{"schemaVersion":1,"gainDB":-8.5,"bypass":true,"deviceUID":"legacy-yeti"}"#.utf8)
     try old.write(to: store.url)
     let migrated = try store.load()
-    XCTAssertEqual(migrated.schemaVersion, 3)
-    XCTAssertEqual(migrated.gainDB, -8.5)
-    XCTAssertTrue(migrated.bypass)
+    XCTAssertEqual(migrated.schemaVersion, 4)
+    XCTAssertEqual(migrated.gainDB, 0)
+    XCTAssertFalse(migrated.bypass)
     XCTAssertEqual(migrated.deviceUID, "legacy-yeti")
-    XCTAssertEqual(migrated.processing, ProcessingParameter.defaults)
+    XCTAssertEqual(migrated.processing, AudioSettings().processing)
     XCTAssertEqual(try Data(contentsOf: store.url), old)
     try store.save(migrated)
     XCTAssertEqual(try store.load(), migrated)
@@ -69,8 +69,8 @@ extension SettingsTests {
     for corruption in 0..<4 {
       var settings = AudioSettings()
       switch corruption {
-      case 0: settings.processing.removeValue(forKey: "noiseFloor")
-      case 1: settings.processing["noiseFloor"] = 2
+      case 0: settings.processing.removeValue(forKey: "noiseReductionSensitivity")
+      case 1: settings.processing["noiseReductionSensitivity"] = 41
       case 2: settings.processing["limiterEnabled"] = 0.5
       default: settings.processing["futureParameter"] = 1
       }
