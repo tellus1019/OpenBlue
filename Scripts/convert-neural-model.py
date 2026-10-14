@@ -63,7 +63,7 @@ class ChannelGRU(nn.Module):
         gates = torch.sigmoid(incoming[:, :2*self.hidden] + recurrent[:, :2*self.hidden])
         reset, update = gates[:, :self.hidden], gates[:, self.hidden:]
         candidate = torch.tanh(incoming[:, 2*self.hidden:] + reset * recurrent[:, 2*self.hidden:])
-        return candidate + update * (h - candidate)
+        return update * h + (1 - update) * candidate
 
 
 class ChannelNorm(nn.Module):
@@ -120,7 +120,7 @@ class FrequencyGRU(nn.Module):
             r, z = rz[:, :width], rz[:, width:]
             recurrent_n = F.conv2d(hidden, self.hh_candidate_weight, self.hh_candidate_bias)
             n = torch.tanh(candidate[:, :, :, position:position+1] + r*recurrent_n)
-            hidden = n + z*(hidden-n)
+            hidden = z*hidden + (1-z)*n
             outputs.append(hidden)
         result = torch.cat(outputs, dim=3)
         h = self.hidden

@@ -5,7 +5,9 @@ import AudioCore
 import AudioLifecycle
 import CoreAudio
 import Darwin
+#if DEBUG
 import OSLog
+#endif
 import NeuralNoiseReduction
 import Settings
 import SwiftUI
@@ -39,7 +41,9 @@ private actor AdvancedNRLoader {
   }
 }
 
+#if DEBUG
 private let consumerSelector: AudioObjectPropertySelector = 0x6f62_636c
+#endif
 private let virtualUID = "org.openblue.virtual-device"
 
 struct AudioDevice: Identifiable, Equatable {
@@ -175,21 +179,22 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
   private var meterTimer: Timer?
   private var readoutTimer: Timer?
   private var healthTimer: Timer?
+  #if DEBUG
   private var profileTimer: Timer?
+  #endif
   private var visibleMeterWindows: Set<ObjectIdentifier> = []
+  #if DEBUG
   private let callbackProfiling = ProcessInfo.processInfo.environment["OPENBLUE_CALLBACK_PROFILE"] == "1"
-  private let nanosecondsPerTick: Double = {
-    var info = mach_timebase_info_data_t()
-    mach_timebase_info(&info)
-    return Double(info.numer) / Double(info.denom)
-  }()
+  #endif
   private var awake = true
   private var failed = false
   private var knownYetiUIDs: Set<String> = []
   private var driverAvailable = false
   @Published private(set) var consumerCount = 0
   private let store: SettingsStore
+  #if DEBUG
   private let audioLog = Logger(subsystem: "org.openblue.app", category: "AudioLifecycle")
+  #endif
 
   init() {
     store = SettingsStore(
@@ -249,7 +254,9 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     formatListener = nil
   }
   private func audioServiceRestarted() {
+    #if DEBUG
     audioLog.notice("Core Audio service restarted; rebuilding device and client observation")
+    #endif
     cancelRetry(reset: true)
     stopAudio()
     removeFormatListener()
@@ -263,9 +270,13 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     stopAudio()
     guard enabled, awake, settingsError == nil else { return }
     let delay = recovery.nextDelay()
+    #if DEBUG
     let attempt = recovery.attempt
+    #endif
     status = String(format: "%@ failed (%d) · Retrying in %.1f seconds", operation, error, delay)
+    #if DEBUG
     audioLog.error("\(operation, privacy: .public) failed status=\(error) retry=\(attempt) delay=\(delay, format: .fixed(precision: 1))s")
+    #endif
     retryTask = Task { [weak self] in
       try? await Task.sleep(for: .seconds(delay))
       guard !Task.isCancelled, let self else { return }
@@ -283,7 +294,9 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     awake = true
     failed = false
     cancelRetry(reset: true)
+    #if DEBUG
     audioLog.notice("Mac woke; rebuilding the audio path if it is still requested")
+    #endif
     refresh()
   }
   func save() {
@@ -450,12 +463,16 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     let output = all.first { $0.uid == virtualUID }
     let nextYetiUIDs = Set(availableYetis.map(\.uid))
     if nextYetiUIDs != knownYetiUIDs {
+      #if DEBUG
       audioLog.notice("Yeti device set changed: count=\(nextYetiUIDs.count)")
+      #endif
       knownYetiUIDs = nextYetiUIDs
     }
     if (output != nil) != driverAvailable {
       driverAvailable = output != nil
+      #if DEBUG
       audioLog.notice("Virtual microphone availability changed: available=\(self.driverAvailable)")
+      #endif
     }
     guard awake, !failed else {
       stopAudio()
@@ -523,7 +540,9 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
       in: inputClients.processes, device: output.id, excluding: getpid()).count
     if count != consumerCount {
       consumerCount = count
+      #if DEBUG
       audioLog.notice("Virtual microphone input users changed: processes=\(count)")
+      #endif
     }
     guard count > 0 else {
       cancelRetry(reset: true)
@@ -574,7 +593,9 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
         }
       }
       processingLatency = ob_engine_latency(newEngine)
+      #if DEBUG
       ob_engine_set_profiling(newEngine, callbackProfiling)
+      #endif
       let start = ob_engine_start(newEngine)
       guard start == noErr else {
         ob_engine_destroy(newEngine)
@@ -587,7 +608,9 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
       engineOutput = output.id
       startMonitoring()
       recovery.reset()
+      #if DEBUG
       audioLog.info("Audio started: input=\(input.id) output=\(output.id) consumers=\(count) dspDelayFrames=\(self.processingLatency)")
+      #endif
     }
     status = modelLoad != nil && settings.noiseReductionMode == .advanced && engineMode == .standard
       ? "Preparing advanced noise reduction; Standard remains active"
@@ -609,8 +632,10 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
       }
       return
     }
+    #if DEBUG
     let started = ContinuousClock.now
     audioLog.info("Advanced noise reduction preparation started")
+    #endif
     let modelPath = modelURL.path, statePath = stateURL.path
     modelLoad = Task { [weak self] in
       let result = await AdvancedNRLoader.shared.load(modelPath: modelPath, statePath: statePath)
@@ -619,7 +644,9 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
       switch result {
       case .success(let processor):
         self.advancedProcessor = processor
+        #if DEBUG
         self.audioLog.info("Advanced noise reduction prepared in \(String(describing: started.duration(to: .now)), privacy: .public)")
+        #endif
         // Reconcile current intent, not the selection that started preparation.
         if self.enabled && self.awake && !self.failed && self.settingsError == nil {
           self.applyProcessing()
@@ -638,14 +665,18 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     meterTimer?.invalidate(); meterTimer = nil
     readoutTimer?.invalidate(); readoutTimer = nil
     healthTimer?.invalidate(); healthTimer = nil
+    #if DEBUG
     profileTimer?.invalidate(); profileTimer = nil
+    #endif
     if let engine {
+      #if DEBUG
       let stats = ob_engine_diagnostics(engine)
       audioLog.info("Audio stopping: capture=\(stats.captured_frames) dsp=\(stats.signal.output_frames) render=\(stats.render_frames) error=\(stats.error) underruns=\(stats.signal.underruns) overruns=\(stats.signal.overruns)")
       if stats.signal.advanced_deadline_misses > 0 {
         audioLog.error("Advanced NR late output: episodes=\(stats.signal.advanced_deadline_misses) frames=\(stats.signal.advanced_late_frames)")
       }
       if callbackProfiling { logCallbackProfile(ob_engine_stats(engine)) }
+      #endif
       ob_engine_destroy(engine)
     }
     engine = nil
@@ -670,9 +701,11 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
   private func startMonitoring() {
     // Keep fault detection independent of the display and its visibility.
     healthTimer = startTimer(1.0 / 60.0, selector: #selector(checkHealth(_:)))
+    #if DEBUG
     if callbackProfiling {
       profileTimer = startTimer(10, selector: #selector(recordProfile(_:)))
     }
+    #endif
     updateDisplayTimers()
   }
 
@@ -709,10 +742,12 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     }
   }
 
+  #if DEBUG
   @objc private func recordProfile(_ timer: Timer) {
     guard let engine else { return }
     logCallbackProfile(ob_engine_stats(engine))
   }
+  #endif
 
   @objc private func meterTick(_ timer: Timer) { updateMeters() }
   @objc private func readoutTick(_ timer: Timer) { updateReadouts() }
@@ -727,6 +762,7 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     meterDisplay.updateReadouts(ob_engine_meters(engine))
 
   }
+  #if DEBUG
   private func logCallbackProfile(_ stats: OBEngineStats) {
     let buckets = withUnsafeBytes(of: stats.output_duration_buckets) {
       Array($0.bindMemory(to: UInt64.self))
@@ -735,6 +771,7 @@ private func nominalSampleRate(_ device: AudioDeviceID) -> Double? {
     audioLog.info(
       "Callback profile: inputCount=\(stats.input_callbacks) inputTicks=\(stats.input_total_ticks) inputMaxTicks=\(stats.input_max_ticks) outputCount=\(stats.output_callbacks) outputTicks=\(stats.output_total_ticks) outputMaxTicks=\(stats.callback_max_ticks) outputBudgetExceeded=\(stats.output_budget_exceeded) outputMinFrames=\(stats.output_min_frames) outputMaxFrames=\(stats.output_max_frames) histogram=\(histogram, privacy: .public)")
   }
+  #endif
 }
 
 struct ContentView: View {
@@ -839,6 +876,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 @main struct OpenBlueApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
+  #if DEBUG
   init() {
     if CommandLine.arguments.contains("--inspect") {
       let processes = try? InputClients.snapshot()
@@ -862,6 +900,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       exit(0)
     }
   }
+  #endif
   var body: some Scene {
     MenuBarExtra {
       QuickAccess(model: delegate.model, delegate: delegate)

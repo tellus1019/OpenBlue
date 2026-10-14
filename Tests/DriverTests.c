@@ -152,11 +152,12 @@ int main(int argc, char **argv) {
         kAudioObjectPropertyScopeGlobal, sizeof(AudioStreamBasicDescription));
   check(OUTPUT, kAudioStreamPropertyAvailableVirtualFormats,
         kAudioObjectPropertyScopeGlobal, sizeof(AudioStreamRangedDescription));
+  UInt32 actual;
+#if OB_DIAGNOSTICS
   AudioObjectPropertyAddress a = {CLIENTS, kAudioObjectPropertyScopeGlobal, 0};
   Boolean writable = true;
   assert(settable(driver, DEVICE, 10, &a, &writable) == 0 && !writable);
   AudioServerPlugInCustomPropertyInfo info;
-  UInt32 actual;
   AudioObjectPropertyAddress list = {kAudioObjectPropertyCustomPropertyInfoList,
                                      kAudioObjectPropertyScopeGlobal, 0};
   assert(get(driver, DEVICE, 10, &list, 0, NULL, sizeof(info), &actual,
@@ -164,6 +165,12 @@ int main(int argc, char **argv) {
   assert(info.mSelector == CLIENTS &&
          info.mPropertyDataType ==
              kAudioServerPlugInCustomPropertyDataTypeCFString);
+#else
+  AudioObjectPropertyAddress removed = {'obcl', kAudioObjectPropertyScopeGlobal, 0};
+  assert(!has(driver, DEVICE, 10, &removed));
+  assert(get(driver, DEVICE, 10, &removed, 0, NULL, 0, &actual, NULL) ==
+         kAudioHardwareUnknownPropertyError);
+#endif
   AudioServerPlugInClientInfo app = {1, 123, true, CFSTR("org.openblue.app")};
   AudioServerPlugInClientInfo consumer = {2, 456, true,
                                           CFSTR("org.example.recorder")};
@@ -171,17 +178,23 @@ int main(int argc, char **argv) {
          add_client(driver, DEVICE, &consumer) == 0);
   assert(start(driver, DEVICE, 2) == 0 && atomic_load(&running) == 1);
   assert(start(driver, DEVICE, 1) == 0 && atomic_load(&running) == 2);
+#if OB_DIAGNOSTICS
   CFStringRef text = NULL;
   assert(get(driver, DEVICE, 10, &a, 0, NULL, sizeof(text), &actual, &text) ==
          0);
   assert(CFEqual(text, CFSTR("2")));
   CFRelease(text);
+#endif
   latency();
   assert(stop(driver, DEVICE, 2) == 0 && atomic_load(&running) == 1);
   assert(stop(driver, DEVICE, 1) == 0 && atomic_load(&running) == 0);
   assert(remove_client(driver, DEVICE, &app) == 0 &&
          remove_client(driver, DEVICE, &consumer) == 0);
+#if OB_DIAGNOSTICS
   assert(notifications == 6);
+#else
+  assert(notifications == 2);
+#endif
   // Two distinct host clients must remain independent in either start order.
   AudioServerPlugInClientInfo second = {3, 789, true,
                                         CFSTR("org.example.browser")};
@@ -229,6 +242,5 @@ int main(int argc, char **argv) {
   assert(start(driver, DEVICE, kAudioServerPlugInHostClientID) == kAudioHardwareIllegalOperationError);
   assert(atomic_load(&running) == UINT32_MAX);
   atomic_store(&running, 0);
-  puts("PASS driver interface, custom property contract, client lifecycle and "
-       "audio I/O");
+  puts("PASS driver interface, client lifecycle and audio I/O");
 }

@@ -3,6 +3,10 @@
 OpenBlue processes 48 kHz stereo locally. These algorithms define OpenBlue's
 behavior; they do not reproduce Logitech's undocumented internal processing.
 
+OpenBlue does not include acoustic echo cancellation.
+Speaker playback picked up by the microphone can cause unwanted speech
+attenuation during noise reduction.
+
 ## Signal path
 
 Input meter → input gain → high-pass filter → noise reduction → noise gate →
@@ -48,7 +52,7 @@ to 500 ppm). The total ratio is limited to 0.5% without additional audio bufferi
 Route reconstruction clears the estimate after reconnection or a sample-rate
 change; backwards timestamps or long timestamp interruptions also clear it. The loopback driver adds 64 frames (1.33 ms). Input buffering, interpolation
 and virtual-device latency are additional to the displayed processing delay.
-Final clipping to ±1 remains active and is counted in diagnostics.
+Final clipping to ±1 remains active. Debug diagnostics include the clipped-sample count.
 
 ## Behavior
 
@@ -153,7 +157,7 @@ it never waits for inference. Processing receives a complete prepared parameter
 snapshot at block boundaries. A temporary worker deadline miss fades to silence
 over 1 ms and resumes the current processed timeline with a 1 ms fade when the
 worker catches up. Expired output is not replayed, latency does not accumulate,
-and model state is retained. Diagnostics count the missing frames and episodes.
+and model state is retained. Debug diagnostics count the missing frames and episodes.
 A model error, exhausted worker ring, or input starvation in advanced mode emits
 silence and enters the engine's recovery path; it does not fall back to
 unprocessed audio. Histories clear on rebuild; settings
@@ -162,6 +166,10 @@ after input starvation.
 While a client uses the virtual microphone, a scoped process activity requests
 time-sensitive execution even with every window closed. It ends when processing
 stops and does not prevent idle system sleep.
+
+Local lifecycle, configuration and fault logs are available only in Debug builds.
+Detailed callback timing, device inspection and the diagnostic driver property
+are also Debug-only. Release builds omit these logging and inspection paths.
 
 Each preset holds separate Standard NR parameters and an Advanced maximum
 reduction. Factory presets use 40 dB for Advanced NR. Switching methods retains

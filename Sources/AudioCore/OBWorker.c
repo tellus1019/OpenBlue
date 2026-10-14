@@ -2,7 +2,9 @@
 #include <AudioToolbox/AudioToolbox.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#if OB_DIAGNOSTICS
 #include <os/log.h>
+#endif
 #include <os/workgroup.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -20,9 +22,11 @@ struct OBWorker {
   _Atomic bool stopping, failed;
   _Atomic uint64_t written, processed;
   _Atomic uint64_t late_frames, deadline_misses;
+#if OB_DIAGNOSTICS
   _Atomic unsigned failure_reason;
   uint32_t failure_frames;
   uint64_t failure_position, failure_processed, longest_hop_ticks;
+#endif
   uint64_t position;
   uint32_t maximum, latency, startup_silence;
   float last_output[2], dropout_start[2];
@@ -38,6 +42,7 @@ enum { SIGNAL_FAILURE = 1, WAIT_FAILURE, PREDICTION_FAILURE,
        THREAD_SETUP_FAILURE, INTERVAL_FAILURE };
 static void fail(OBWorker *w, unsigned reason, uint32_t frames,
                  uint64_t position, uint64_t processed) {
+#if OB_DIAGNOSTICS
   unsigned expected = 0;
   if (atomic_compare_exchange_strong_explicit(&w->failure_reason, &expected, reason,
                                               memory_order_relaxed, memory_order_relaxed)) {
@@ -45,6 +50,9 @@ static void fail(OBWorker *w, unsigned reason, uint32_t frames,
     w->failure_position = position;
     w->failure_processed = processed;
   }
+#else
+  (void)reason; (void)frames; (void)position; (void)processed;
+#endif
   atomic_store_explicit(&w->failed, true, memory_order_relaxed);
 }
 static void *run(void *context) {
@@ -87,8 +95,10 @@ static void *run(void *context) {
     }
     bool success = ob_dsp_process_advanced(w->dsp, hop);
     int finished = os_workgroup_interval_finish(w->workgroup, NULL);
+#if OB_DIAGNOSTICS
     uint64_t elapsed = mach_absolute_time() - started;
     if (elapsed > w->longest_hop_ticks) w->longest_hop_ticks = elapsed;
+#endif
     if (!success) { fail(w, PREDICTION_FAILURE, OB_ADVANCED_HOP, read, read); break; }
     if (finished) { fail(w, INTERVAL_FAILURE, OB_ADVANCED_HOP, read, read); break; }
     for (unsigned i = 0; i < OB_ADVANCED_HOP; ++i)
@@ -139,6 +149,7 @@ void ob_worker_destroy(OBWorker *w) {
   pthread_join(w->thread, NULL);
   os_release(w->workgroup);
   semaphore_destroy(mach_task_self(), w->ready);
+#if OB_DIAGNOSTICS
   unsigned reason = atomic_load_explicit(&w->failure_reason, memory_order_relaxed);
   if (reason) {
     // Both audio and inference are stopped before reading the fault snapshot.
@@ -152,6 +163,7 @@ void ob_worker_destroy(OBWorker *w) {
       w->longest_hop_ticks * (double)timebase.numer / timebase.denom / 1e6);
     os_release(log);
   }
+#endif
   semaphore_destroy(mach_task_self(), w->wake);
   free(w);
 }

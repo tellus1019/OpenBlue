@@ -12,17 +12,20 @@ struct OBEngine {
   uint32_t output_frames;
   float capture[MAX_FRAMES * 2];
   _Atomic int32_t error;
-  _Atomic uint64_t callback_max_ticks;
+  double host_seconds_per_tick;
+#if OB_DIAGNOSTICS
   _Atomic uint64_t captured_frames, render_frames;
+  _Atomic uint64_t callback_max_ticks;
   bool profiling;
   uint64_t ticks_per_second;
-  double host_seconds_per_tick;
   uint64_t ticks_per_bucket;
   _Atomic uint64_t input_callbacks, input_total_ticks, input_max_ticks;
   _Atomic uint64_t output_callbacks, output_total_ticks, output_budget_exceeded;
   _Atomic uint32_t output_min_frames, output_max_frames;
   _Atomic uint64_t output_duration_buckets[OB_CALLBACK_BUCKETS];
+#endif
 };
+#if OB_DIAGNOSTICS
 static void update_max(_Atomic uint64_t *maximum, uint64_t value) {
   uint64_t previous = atomic_load_explicit(maximum, memory_order_relaxed);
   while (value > previous &&
@@ -68,6 +71,7 @@ static void record_output(OBEngine *e, uint64_t started, UInt32 frames) {
                               memory_order_relaxed);
   }
 }
+#endif
 static void failure(OBEngine *e, OSStatus status) {
   int32_t expected = 0;
   atomic_compare_exchange_strong(&e->error, &expected, status);
@@ -76,32 +80,44 @@ static OSStatus capture(void *context, AudioUnitRenderActionFlags *flags,
                         const AudioTimeStamp *time, UInt32 bus, UInt32 n,
                         AudioBufferList *unused) {
   OBEngine *e = context;
+#if OB_DIAGNOSTICS
   uint64_t started = e->profiling ? mach_absolute_time() : 0;
+#endif
   if (n > MAX_FRAMES) {
     failure(e, kAudioUnitErr_TooManyFramesToProcess);
+#if OB_DIAGNOSTICS
     record_input(e, started);
+#endif
     return noErr;
   }
   AudioBufferList b = {1, {{2, n * 8, e->capture}}};
   OSStatus status = AudioUnitRender(e->input, flags, time, 1, n, &b);
   if (status) {
     failure(e, status);
+#if OB_DIAGNOSTICS
     record_input(e, started);
+#endif
     return noErr;
   }
+#if OB_DIAGNOSTICS
   atomic_fetch_add_explicit(&e->captured_frames, n, memory_order_relaxed);
+#endif
   if ((time->mFlags & kAudioTimeStampSampleHostTimeValid) == kAudioTimeStampSampleHostTimeValid)
     ob_signal_input_time(e->signal, time->mSampleTime,
                          time->mHostTime * e->host_seconds_per_tick);
   ob_signal_push(e->signal, e->capture, n);
+#if OB_DIAGNOSTICS
   record_input(e, started);
+#endif
   return noErr;
 }
 static OSStatus render(void *context, AudioUnitRenderActionFlags *flags,
                        const AudioTimeStamp *time, UInt32 bus, UInt32 n,
                        AudioBufferList *buffers) {
   OBEngine *e = context;
+#if OB_DIAGNOSTICS
   uint64_t started = mach_absolute_time();
+#endif
   if (n > MAX_FRAMES || buffers->mNumberBuffers != 1 ||
       buffers->mBuffers[0].mNumberChannels != 2 ||
       buffers->mBuffers[0].mDataByteSize < n * 8) {
@@ -110,15 +126,21 @@ static OSStatus render(void *context, AudioUnitRenderActionFlags *flags,
         memset(buffers->mBuffers[i].mData, 0,
                buffers->mBuffers[i].mDataByteSize);
     failure(e, kAudioUnitErr_FormatNotSupported);
+#if OB_DIAGNOSTICS
     record_output(e, started, n);
+#endif
     return noErr;
   }
   if ((time->mFlags & kAudioTimeStampSampleHostTimeValid) == kAudioTimeStampSampleHostTimeValid)
     ob_signal_output_time(e->signal, time->mSampleTime,
                           time->mHostTime * e->host_seconds_per_tick);
   ob_signal_render(e->signal, buffers->mBuffers[0].mData, n);
+#if OB_DIAGNOSTICS
   atomic_fetch_add_explicit(&e->render_frames, n, memory_order_relaxed);
+#endif
+#if OB_DIAGNOSTICS
   record_output(e, started, n);
+#endif
   return noErr;
 }
 static OSStatus setup(OBEngine *e, AudioUnit *unit, AudioDeviceID device,
@@ -205,9 +227,11 @@ OBEngine *ob_engine_create(AudioDeviceID input, AudioDeviceID output,
   mach_timebase_info_data_t timebase;
   if (mach_timebase_info(&timebase) == KERN_SUCCESS && timebase.numer) {
     e->host_seconds_per_tick = (double)timebase.numer / timebase.denom / 1e9;
+#if OB_DIAGNOSTICS
     e->ticks_per_second = 1000000000ull * timebase.denom / timebase.numer;
     e->ticks_per_bucket = (uint64_t)OB_CALLBACK_BUCKET_US * 1000 *
                           timebase.denom / timebase.numer;
+#endif
   }
   AudioObjectPropertyAddress buffer_address = {
     kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal,
@@ -259,9 +283,11 @@ void ob_engine_destroy(OBEngine *e) {
   ob_signal_destroy(e->signal);
   free(e);
 }
+#if OB_DIAGNOSTICS
 void ob_engine_set_profiling(OBEngine *e, bool enabled) {
   e->profiling = enabled;
 }
+#endif
 OSStatus ob_engine_error(OBEngine *e) {
   OSStatus result = atomic_load_explicit(&e->error, memory_order_relaxed);
   return result ? result : ob_signal_failed(e->signal) ? OB_ADVANCED_NR_ERROR : noErr;
@@ -269,10 +295,10 @@ OSStatus ob_engine_error(OBEngine *e) {
 OBMeterValues ob_engine_meters(OBEngine *e) {
   return ob_signal_meters(e->signal);
 }
+#if OB_DIAGNOSTICS
 OBEngineDiagnostics ob_engine_diagnostics(OBEngine *e) {
   return (OBEngineDiagnostics){
       ob_signal_stats(e->signal), ob_engine_error(e),
-      atomic_load_explicit(&e->callback_max_ticks, memory_order_relaxed),
       atomic_load_explicit(&e->captured_frames, memory_order_relaxed),
       atomic_load_explicit(&e->render_frames, memory_order_relaxed)};
 }
@@ -296,6 +322,7 @@ OBEngineStats ob_engine_stats(OBEngine *e) {
         atomic_load(&e->output_duration_buckets[i]);
   return stats;
 }
+#endif
 
 bool ob_engine_advanced(OBEngine *e, OBAdvancedNR processor) {
   return ob_signal_advanced(e->signal, processor, e->output_frames);

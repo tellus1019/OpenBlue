@@ -10,7 +10,10 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-enum { PLUGIN = 1, DEVICE = 2, INPUT = 3, OUTPUT = 4, CLIENTS = 'obcl' };
+enum { PLUGIN = 1, DEVICE = 2, INPUT = 3, OUTPUT = 4 };
+#if OB_DIAGNOSTICS
+enum { CLIENTS = 'obcl' };
+#endif
 #define DEVICE_UID "org.openblue.virtual-device"
 static AudioServerPlugInDriverInterface interface;
 static AudioServerPlugInDriverInterface *interface_ptr = &interface;
@@ -222,6 +225,7 @@ specific:
       } layout = {kAudioChannelLayoutTag_Stereo, 0, 0};
       return copy_value(&layout, sizeof(layout), capacity, actual, out, read);
     }
+#if OB_DIAGNOSTICS
     case kAudioObjectPropertyCustomPropertyInfoList: {
       AudioServerPlugInCustomPropertyInfo info = {
           CLIENTS, kAudioServerPlugInCustomPropertyDataTypeCFString,
@@ -243,6 +247,7 @@ specific:
       *(CFStringRef *)out = value;
       return noErr;
     }
+#endif
     default:
       return kAudioHardwareUnknownPropertyError;
     }
@@ -319,6 +324,7 @@ static OSStatus create_device(AudioServerPlugInDriverRef d,
 static OSStatus destroy_device(AudioServerPlugInDriverRef d, AudioObjectID o) {
   return kAudioHardwareUnsupportedOperationError;
 }
+#if OB_DIAGNOSTICS
 static void changed(void) {
   if (host) {
     AudioObjectPropertyAddress a = {CLIENTS, kAudioObjectPropertyScopeGlobal,
@@ -326,6 +332,7 @@ static void changed(void) {
     host->PropertiesChanged(host, DEVICE, 1, &a);
   }
 }
+#endif
 static void running_changed(void) {
   if (host) {
     AudioObjectPropertyAddress a = {kAudioDevicePropertyDeviceIsRunning,
@@ -430,7 +437,9 @@ static OSStatus start_stop(AudioServerPlugInDriverRef d, AudioObjectID o,
   atomic_store(&running, next);
   bool running_change = (count == 0) != (next == 0);
   pthread_mutex_unlock(&state);
+#if OB_DIAGNOSTICS
   changed();
+#endif
   if (running_change)
     running_changed();
   return noErr;

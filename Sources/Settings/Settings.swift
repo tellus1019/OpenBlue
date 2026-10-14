@@ -1,8 +1,10 @@
 import AudioCore
 import Foundation
+#if DEBUG
 import OSLog
 
 private let settingsLog = Logger(subsystem: "org.openblue.app", category: "Settings")
+#endif
 
 public enum NoiseReductionMode: String, Codable, CaseIterable, Sendable {
   case standard, advanced
@@ -283,11 +285,15 @@ public struct SettingsStore: Sendable {
   }
   public func load() throws -> AudioSettings {
     guard FileManager.default.fileExists(atPath: url.path) else {
+      #if DEBUG
       settingsLog.info("No saved configuration; using deterministic defaults")
+      #endif
       return AudioSettings()
     }
     let settings = try decode(Data(contentsOf: url))
+    #if DEBUG
     settingsLog.info("Configuration loaded as schema 4")
+    #endif
     return settings
   }
   private func decode(_ data: Data) throws -> AudioSettings {
@@ -318,7 +324,9 @@ public struct SettingsStore: Sendable {
         } else {
           try original.write(to: backup, options: [.withoutOverwriting])
         }
+        #if DEBUG
         settingsLog.info("Original schema \(version) configuration backed up before migration")
+        #endif
       }
     }
     try FileManager.default.createDirectory(
@@ -349,7 +357,9 @@ public struct SettingsStore: Sendable {
       preserved = backup
     }
     try replacement.write(to: url, options: [.atomic])
+    #if DEBUG
     settingsLog.info("Configuration restored after preserving the previous document")
+    #endif
     return preserved
   }
 }

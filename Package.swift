@@ -13,6 +13,8 @@ let package = Package(
       linkerSettings: [.linkedFramework("CoreML"), .linkedFramework("Foundation"), .linkedFramework("Accelerate")]),
     .target(
       name: "AudioCore", publicHeadersPath: "include",
+      cSettings: [.define("OB_DIAGNOSTICS", to: "1", .when(configuration: .debug)),
+                  .define("OB_DIAGNOSTICS", to: "0", .when(configuration: .release))],
       linkerSettings: [.linkedFramework("CoreAudio"), .linkedFramework("AudioToolbox"), .linkedFramework("Accelerate")]),
     .target(name: "Settings", dependencies: ["AudioCore"]),
     .target(name: "AudioClients"),

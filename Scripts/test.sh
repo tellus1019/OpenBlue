@@ -41,11 +41,13 @@ xcrun clang -std=c11 -O2 -Wall -Wextra -Werror \
     Sources/AudioCore/OBDSP.c Tests/SignalAdvancedTests.c -framework Accelerate \
     -framework AudioToolbox -o .build/tests/signal-advanced
 .build/tests/signal-advanced
-xcrun clang -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
-    Tests/DriverTests.c -framework CoreAudio -framework CoreFoundation -o .build/tests/driver
-.build/tests/driver
-xcrun clang -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
-    -I Sources/AudioCore/include Tests/EngineDiagnosticsTests.c Sources/AudioCore/OBSignal.c Sources/AudioCore/OBWorker.c Sources/AudioCore/OBDSP.c -framework Accelerate \
-    -framework AudioToolbox -framework CoreAudio -o .build/tests/engine-diagnostics
-.build/tests/engine-diagnostics
+for diagnostics in 0 1; do
+  xcrun clang -std=c11 -O2 -DOB_DIAGNOSTICS="$diagnostics" -Wall -Wextra -Werror -Wno-unused-parameter \
+      Tests/DriverTests.c -framework CoreAudio -framework CoreFoundation -o .build/tests/driver
+  .build/tests/driver
+  xcrun clang -std=c11 -O2 -DOB_DIAGNOSTICS="$diagnostics" -Wall -Wextra -Werror -Wno-unused-parameter \
+      -I Sources/AudioCore/include Tests/EngineDiagnosticsTests.c Sources/AudioCore/OBSignal.c Sources/AudioCore/OBWorker.c Sources/AudioCore/OBDSP.c -framework Accelerate \
+      -framework AudioToolbox -framework CoreAudio -o .build/tests/engine-diagnostics
+  .build/tests/engine-diagnostics
+done
 swift test --scratch-path .build/openblue

@@ -222,6 +222,7 @@
 				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
 				"ENABLE_TESTABILITY" = "YES";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG $(inherited)";
+				"OTHER_SWIFT_FLAGS" = "$(inherited) -Xcc -DOB_DIAGNOSTICS=1";
 			};
 			"name" = "Debug";
 		};

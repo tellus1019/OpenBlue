@@ -33,6 +33,9 @@ remove software, register services, launch the app, capture a microphone,
 change the default audio device, or restart anything.
 Bundles are ad-hoc signed for local development, not notarized for distribution.
 
+Debug builds include local logs and diagnostic tools for troubleshooting.
+Release builds omit these features.
+
 ## Installation boundary
 
 Installation is separate from building and testing. The supported locations
